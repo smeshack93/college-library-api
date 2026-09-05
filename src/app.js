@@ -48,15 +48,9 @@ app.get('/api/health', (req, res) => {
 });
 
 /**
- * DUAL ROUTE MOUNTING
- * This fixes your 404 errors. 
- * It allows the app to find /auth/login OR /api/auth/login.
+ * SINGLE ROUTE MOUNTING WITH /api PREFIX
+ * This is the standard REST practice
  */
-// Support for requests WITHOUT /api prefix (fixes your current 404 logs)
-app.use('/auth', authRoutes);           
-app.use('/books', bookRoutes);         
-app.use('/librarian', librarianRoutes); 
-
 // Support for requests WITH /api prefix (Standard REST practice)
 app.use('/api/auth', authRoutes);           
 app.use('/api/books', bookRoutes);         
@@ -85,7 +79,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('--------------------------------------------------');
   console.log(`🚀 Server running on port: ${PORT}`);
-  console.log(`📝 Logic: Supporting both /api and root paths`);
+  console.log(`📝 Logic: Supporting /api prefix only`);
   console.log('--------------------------------------------------');
 });
 
