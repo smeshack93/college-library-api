@@ -222,23 +222,16 @@ class BookController {
 
     /**
      * Get all borrow requests for a specific user
-     * GET /api/books/user/:id/borrows OR /api/books/users/:id/borrows
+     * GET /api/books/users/:id/borrows
+     * GET /api/books/user/:id/borrows
      */
     static async getUserBorrows(req, res) {
         try {
-            const userId = req.params.userId || req.params.id;
+            const userId = req.params.id || req.params.userId;
             
             console.log(`🔍 Fetching borrows for user ID: ${userId}`);
-            console.log(`👤 Requesting user: ${req.user?.id}, Type: ${req.user?.type}`);
             
-            if (req.user && req.user.type !== 'LIBRARIAN' && req.user.id !== parseInt(userId)) {
-                console.log(`❌ Unauthorized: User ${req.user.id} trying to access ${userId}`);
-                return res.status(403).json({
-                    success: false,
-                    message: 'Unauthorized to view this user\'s borrows'
-                });
-            }
-
+            // Check if user exists
             const [users] = await pool.execute(
                 'SELECT id, full_name FROM users WHERE id = ?',
                 [userId]
@@ -254,10 +247,11 @@ class BookController {
             
             console.log(`✅ User found: ${users[0].full_name}`);
 
+            // Get ALL borrow requests for this user (including all statuses)
+            // Include related request info to check if return was already processed
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
-                    br.user_id as userId,
                     br.book_id as bookId,
                     br.request_date as requestDate,
                     br.status,
@@ -265,14 +259,17 @@ class BookController {
                     br.due_date as dueDate,
                     br.borrow_date as borrowDate,
                     br.approval_date as approvalDate,
-                    br.return_date as returnDate,
                     br.notes,
+                    br.related_request_id,
                     b.title as bookTitle,
                     b.author as bookAuthor,
-                    b.isbn as bookIsbn,
+                    b.isbn,
                     b.category,
                     b.nta_level as ntaLevel,
-                    l.full_name as librarianName
+                    l.full_name as librarianName,
+                    -- Check if there's an approved return for this borrow request
+                    (SELECT COUNT(*) FROM book_requests 
+                     WHERE related_request_id = br.id AND request_type = 'RETURN' AND status = 'APPROVED') as has_approved_return
                 FROM book_requests br
                 JOIN books b ON br.book_id = b.id
                 LEFT JOIN librarians l ON br.approved_by = l.id
@@ -282,26 +279,32 @@ class BookController {
 
             console.log(`📚 Found ${rows.length} borrow requests for user ${userId}`);
 
+            // If no requests found, return empty array
+            if (rows.length === 0) {
+                return res.json({
+                    success: true,
+                    count: 0,
+                    data: []
+                });
+            }
+
             const formattedBorrows = rows.map(row => ({
-                id: row.requestId,
                 requestId: row.requestId,
-                userId: row.userId,
                 bookId: row.bookId,
                 bookTitle: row.bookTitle || 'Unknown Book',
                 bookAuthor: row.bookAuthor || 'Unknown Author',
-                bookIsbn: row.bookIsbn || 'N/A',
-                isbn: row.bookIsbn || 'N/A',
+                isbn: row.isbn || 'N/A',
                 status: row.status || 'PENDING',
                 requestDate: row.requestDate,
-                approvalDate: row.approvalDate || null,
                 borrowDate: row.borrowDate || row.requestDate,
                 dueDate: row.dueDate || null,
-                returnDate: row.returnDate || null,
                 category: row.category || 'General',
                 ntaLevel: row.ntaLevel || 'N/A',
                 requestType: row.requestType || 'BORROW',
                 notes: row.notes || '',
-                librarianName: row.librarianName || null
+                librarianName: row.librarianName || null,
+                relatedRequestId: row.related_request_id || 0,
+                hasApprovedReturn: row.has_approved_return > 0  // Flag for return status
             }));
 
             res.json({
