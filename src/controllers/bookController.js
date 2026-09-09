@@ -119,18 +119,109 @@ class BookController {
     }
 
     /**
+     * Request to return an approved borrowed book
+     * POST /api/books/return
+     */
+    static async requestReturn(req, res) {
+        try {
+            const userId = req.user.id;
+            const { bookId, requestId } = req.body;
+
+            if (!bookId || !requestId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'bookId and requestId are required'
+                });
+            }
+
+            // 1. Verify the original borrow request exists, belongs to user, and is currently APPROVED
+            const [borrowRequests] = await pool.execute(
+                `SELECT id, book_id, status, request_type 
+                 FROM book_requests 
+                 WHERE id = ? AND user_id = ? AND status = 'APPROVED'`,
+                [requestId, userId]
+            );
+
+            if (borrowRequests.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Approved borrow record not found for this user'
+                });
+            }
+
+            const borrowRequest = borrowRequests[0];
+
+            if (borrowRequest.request_type !== 'BORROW') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Target record is not an active borrow request'
+                });
+            }
+
+            // 2. Check for an existing pending return request for this book
+            const [existingReturn] = await pool.execute(
+                `SELECT id FROM book_requests 
+                 WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status = 'PENDING'`,
+                [userId, bookId]
+            );
+
+            if (existingReturn.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'You already have a pending return request for this book'
+                });
+            }
+
+            // 3. Create the return request
+            let insertId;
+            try {
+                // Try inserting with related_request_id if column exists
+                const [result] = await pool.execute(
+                    `INSERT INTO book_requests 
+                     (user_id, book_id, request_type, status, request_date, related_request_id, notes)
+                     VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?, ?)`,
+                    [userId, bookId, requestId, 'Return request for borrowed book']
+                );
+                insertId = result.insertId;
+            } catch (dbErr) {
+                // Fallback standard insert if related_request_id column is absent
+                const [resultFallback] = await pool.execute(
+                    `INSERT INTO book_requests 
+                     (user_id, book_id, request_type, status, request_date, notes)
+                     VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?)`,
+                    [userId, bookId, 'Return request for borrowed book']
+                );
+                insertId = resultFallback.insertId;
+            }
+
+            console.log(`📤 Return request #${insertId} created for user ${userId}, book ${bookId}`);
+
+            res.status(201).json({
+                success: true,
+                message: 'Return request submitted successfully',
+                requestId: insertId
+            });
+
+        } catch (error) {
+            console.error('Error requesting return:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Failed to process return request: ' + error.message
+            });
+        }
+    }
+
+    /**
      * Get all borrow requests for a specific user
      * GET /api/books/user/:id/borrows OR /api/books/users/:id/borrows
      */
     static async getUserBorrows(req, res) {
         try {
-            // Support both :id and :userId parameter names from express routes
             const userId = req.params.userId || req.params.id;
             
             console.log(`🔍 Fetching borrows for user ID: ${userId}`);
             console.log(`👤 Requesting user: ${req.user?.id}, Type: ${req.user?.type}`);
             
-            // Verify the requesting user is the same as the userId (or is a librarian)
             if (req.user && req.user.type !== 'LIBRARIAN' && req.user.id !== parseInt(userId)) {
                 console.log(`❌ Unauthorized: User ${req.user.id} trying to access ${userId}`);
                 return res.status(403).json({
@@ -139,7 +230,6 @@ class BookController {
                 });
             }
 
-            // Check if user exists
             const [users] = await pool.execute(
                 'SELECT id, full_name FROM users WHERE id = ?',
                 [userId]
@@ -155,7 +245,6 @@ class BookController {
             
             console.log(`✅ User found: ${users[0].full_name}`);
 
-            // Get all borrow requests for this user
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
@@ -302,7 +391,6 @@ class BookController {
             
             await connection.beginTransaction();
             
-            // Get the request details with book info
             const [requests] = await connection.execute(
                 `SELECT br.*, b.title, b.available_quantity, b.quantity 
                  FROM book_requests br
@@ -325,7 +413,6 @@ class BookController {
             let actionMessage = '';
             
             if (request.request_type === 'BORROW') {
-                // Update borrow request status & set due dates
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'APPROVED', 
@@ -338,7 +425,6 @@ class BookController {
                     [librarianId, notes, id]
                 );
 
-                // Decrease available quantity for borrow
                 const [updateResult] = await connection.execute(
                     `UPDATE books 
                      SET available_quantity = available_quantity - 1 
@@ -356,7 +442,6 @@ class BookController {
                 actionMessage = 'Borrow request approved';
                 
             } else if (request.request_type === 'RETURN') {
-                // Mark request as RETURNED
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'RETURNED', 
@@ -368,7 +453,6 @@ class BookController {
                     [librarianId, notes, id]
                 );
 
-                // Increase available quantity back to library stock
                 await connection.execute(
                     `UPDATE books 
                      SET available_quantity = available_quantity + 1 
@@ -386,7 +470,6 @@ class BookController {
             
             await connection.commit();
             
-            // Get updated book quantity
             const [updatedBooks] = await pool.execute(
                 'SELECT available_quantity FROM books WHERE id = ?',
                 [request.book_id]
