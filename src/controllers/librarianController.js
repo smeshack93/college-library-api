@@ -235,10 +235,12 @@ class LibrarianController {
     }
     
     /**
-     * Get pending book requests
+     * Get pending book requests (both BORROW and RETURN)
+     * GET /api/librarian/requests/pending
      */
     static async getPendingRequests(req, res) {
         try {
+            // Include both BORROW and RETURN request types
             const [requests] = await pool.execute(`
                 SELECT 
                     br.id,
@@ -253,13 +255,26 @@ class LibrarianController {
                     u.nta_level as userNtaLevel,
                     b.title as bookTitle,
                     b.author as bookAuthor,
-                    b.isbn
+                    b.isbn,
+                    b.available_quantity
                 FROM book_requests br
                 JOIN users u ON br.user_id = u.id
                 JOIN books b ON br.book_id = b.id
-                WHERE br.status = 'PENDING' AND br.request_type = 'BORROW'
-                ORDER BY br.request_date DESC
+                WHERE br.status = 'PENDING'
+                ORDER BY 
+                    CASE br.request_type 
+                        WHEN 'RETURN' THEN 1 
+                        WHEN 'BORROW' THEN 2 
+                        ELSE 3 
+                    END,
+                    br.request_date DESC
             `);
+            
+            console.log(`📋 Found ${requests.length} pending requests (including returns)`);
+            
+            requests.forEach(req => {
+                console.log(`📌 Request ${req.id}: ${req.request_type} - ${req.bookTitle}`);
+            });
             
             // Format the response to match Android expectations
             const formattedRequests = requests.map(req => ({
@@ -271,9 +286,10 @@ class LibrarianController {
                 bookAuthor: req.bookAuthor,
                 bookIsbn: req.isbn,
                 requestDate: req.request_date,
-                requestType: req.request_type,
+                requestType: req.request_type || 'BORROW',
                 status: req.status,
-                notes: req.notes
+                notes: req.notes,
+                availableQuantity: req.available_quantity
             }));
             
             res.json({ 
@@ -290,7 +306,8 @@ class LibrarianController {
     }
     
     /**
-     * Approve a book request
+     * Approve a book request (handles both BORROW and RETURN)
+     * POST /api/librarian/requests/:id/approve
      */
     static async approveRequest(req, res) {
         const connection = await pool.getConnection();
@@ -316,33 +333,47 @@ class LibrarianController {
             }
             
             const request = requests[0];
+            console.log(`📌 Processing request ${id}: ${request.request_type}`);
             
             // Update request status
-            const [result] = await connection.execute(
+            await connection.execute(
                 `UPDATE book_requests 
                  SET status = 'APPROVED', 
                      approved_by = ?, 
                      approval_date = NOW(),
+                     borrow_date = NOW(),
                      due_date = DATE_ADD(NOW(), INTERVAL 14 DAY)
                  WHERE id = ?`,
                 [librarianId, id]
             );
             
-            // Update book availability if it's a borrow request
+            // Handle different request types
             if (request.request_type === 'BORROW') {
+                // Decrease available quantity for borrow
                 await connection.execute(
                     `UPDATE books 
                      SET available_quantity = available_quantity - 1 
                      WHERE id = ? AND available_quantity > 0`,
                     [request.book_id]
                 );
+                console.log(`✅ Borrow request approved - quantity decreased`);
+                
+            } else if (request.request_type === 'RETURN') {
+                // Increase available quantity for return
+                await connection.execute(
+                    `UPDATE books 
+                     SET available_quantity = available_quantity + 1 
+                     WHERE id = ?`,
+                    [request.book_id]
+                );
+                console.log(`✅ Return request approved - quantity increased`);
             }
             
             await connection.commit();
             
             res.json({ 
                 success: true, 
-                message: 'Request approved successfully' 
+                message: `${request.request_type} request approved successfully` 
             });
             
         } catch (error) {
