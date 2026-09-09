@@ -1,37 +1,41 @@
 const jwt = require('jsonwebtoken');
 
-// Helper to extract and verify token
-const verifyToken = (req, res) => {
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-  if (!token) {
-    return { error: { status: 401, message: 'No token, authorization denied' } };
-  }
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    return { decoded };
-  } catch {
-    return { error: { status: 401, message: 'Token is not valid' } };
-  }
-};
+// Unified secret fallback
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
-// General auth middleware
 const authMiddleware = (req, res, next) => {
-  const { decoded, error } = verifyToken(req, res);
-  if (error) return res.status(error.status).json({ success: false, message: error.message });
-  req.user = decoded;
-  next();
-};
+  const authHeader = req.header('Authorization');
+  const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : null;
 
-// Role-based middleware
-const roleAuth = (role) => (req, res, next) => {
-  const { decoded, error } = verifyToken(req, res);
-  if (error) return res.status(error.status).json({ success: false, message: error.message });
-
-  if (decoded.type !== role) {
-    return res.status(403).json({ success: false, message: `Access denied. ${role} only.` });
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      message: 'No token, authorization denied' 
+    });
   }
-  req.user = decoded;
-  next();
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Token is not valid' 
+    });
+  }
 };
 
-module.exports = { authMiddleware, roleAuth };
+const librarianAuth = (req, res, next) => {
+  authMiddleware(req, res, () => {
+    if (req.user?.type !== 'LIBRARIAN') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Access denied. Librarian only.' 
+      });
+    }
+    next();
+  });
+};
+
+module.exports = { authMiddleware, librarianAuth };
