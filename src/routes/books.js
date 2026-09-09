@@ -4,15 +4,32 @@ const router = express.Router();
 const BookController = require('../controllers/bookController');
 const { authMiddleware } = require('../middleware/auth');
 
-// Public routes
+// ==========================================
+// Public Routes
+// ==========================================
 router.get('/', BookController.getAllBooks);
-router.get('/:id', BookController.getBookById);
 
-// Protected routes (require login)
+// ==========================================
+// Protected Routes (Require Login)
+// ==========================================
+
+// Specific POST action endpoints
 router.post('/request', authMiddleware, BookController.requestBook);
+router.post('/return', authMiddleware, BookController.requestReturn);
 
-// User borrow request history routes (supports both plural 'users' and singular 'user')
+// Authenticated user's personal history
+router.get('/my-borrows', authMiddleware, BookController.getMyBorrows);
+
+// Support both endpoint patterns for specific user borrows (:userId / :id)
 router.get('/users/:userId/borrows', authMiddleware, BookController.getUserBorrows);
 router.get('/user/:userId/borrows', authMiddleware, BookController.getUserBorrows);
+router.get('/users/:id/borrows', authMiddleware, BookController.getUserBorrows);
+router.get('/user/:id/borrows', authMiddleware, BookController.getUserBorrows);
+
+// ==========================================
+// Parameterized Catch-All Public Routes
+// (MUST remain at the bottom to prevent route collisions)
+// ==========================================
+router.get('/:id', BookController.getBookById);
 
 module.exports = router;
