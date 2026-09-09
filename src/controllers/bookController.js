@@ -108,6 +108,98 @@ class BookController {
       connection.release();
     }
   }
+
+  // Handle the /users/:id/borrows endpoint correctly
+  static async getUserBorrows(req, res) {
+    try {
+      const userId = req.params.id;
+      
+      console.log(`🔍 Fetching borrows for user ID: ${userId}`);
+      console.log(`👤 Requesting user: ${req.user?.id}, Type: ${req.user?.type}`);
+      
+      // Check if user exists
+      const [users] = await pool.execute(
+        'SELECT id, full_name FROM users WHERE id = ?',
+        [userId]
+      );
+      
+      if (users.length === 0) {
+        console.log(`❌ User ${userId} not found`);
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+      
+      console.log(`✅ User found: ${users[0].full_name}`);
+
+      // Get all borrow requests for this user (including all statuses)
+      const [rows] = await pool.execute(`
+        SELECT 
+          br.id as requestId,
+          br.book_id as bookId,
+          br.request_date as requestDate,
+          br.status,
+          br.request_type as requestType,
+          br.due_date as dueDate,
+          br.borrow_date as borrowDate,
+          br.approval_date as approvalDate,
+          br.notes,
+          b.title as bookTitle,
+          b.author as bookAuthor,
+          b.isbn,
+          b.category,
+          b.nta_level as ntaLevel,
+          l.full_name as librarianName
+        FROM book_requests br
+        JOIN books b ON br.book_id = b.id
+        LEFT JOIN librarians l ON br.approved_by = l.id
+        WHERE br.user_id = ?
+        ORDER BY br.request_date DESC
+      `, [userId]);
+
+      console.log(`📚 Found ${rows.length} borrow requests for user ${userId}`);
+
+      // If no requests found, return empty array (not error)
+      if (rows.length === 0) {
+        return res.json({
+          success: true,
+          count: 0,
+          data: []
+        });
+      }
+
+      const formattedBorrows = rows.map(row => ({
+        requestId: row.requestId,
+        bookId: row.bookId,
+        bookTitle: row.bookTitle || 'Unknown Book',
+        bookAuthor: row.bookAuthor || 'Unknown Author',
+        isbn: row.isbn || 'N/A',
+        status: row.status || 'PENDING',
+        requestDate: row.requestDate,
+        borrowDate: row.borrowDate || row.requestDate, // Fallback to requestDate
+        dueDate: row.dueDate || null,
+        category: row.category || 'General',
+        ntaLevel: row.ntaLevel || 'N/A',
+        requestType: row.requestType || 'BORROW',
+        notes: row.notes || '',
+        librarianName: row.librarianName || null
+      }));
+
+      res.json({
+        success: true,
+        count: formattedBorrows.length,
+        data: formattedBorrows
+      });
+
+    } catch (error) {
+      console.error('Error fetching user borrows:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch borrow requests: ' + error.message
+      });
+    }
+  }
 }
 
 module.exports = BookController;
