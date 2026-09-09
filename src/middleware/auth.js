@@ -1,55 +1,37 @@
 const jwt = require('jsonwebtoken');
 
+// Helper to extract and verify token
+const verifyToken = (req, res) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) {
+    return { error: { status: 401, message: 'No token, authorization denied' } };
+  }
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    return { decoded };
+  } catch {
+    return { error: { status: 401, message: 'Token is not valid' } };
+  }
+};
+
+// General auth middleware
 const authMiddleware = (req, res, next) => {
-  // Get token from header
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-
-  if (!token) {
-    return res.status(401).json({ 
-      success: false, 
-      message: 'No token, authorization denied' 
-    });
-  }
-
-  try {
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (error) {
-    res.status(401).json({ 
-      success: false, 
-      message: 'Token is not valid' 
-    });
-  }
+  const { decoded, error } = verifyToken(req, res);
+  if (error) return res.status(error.status).json({ success: false, message: error.message });
+  req.user = decoded;
+  next();
 };
 
-const librarianAuth = (req, res, next) => {
-  const token = req.header('Authorization')?.replace('Bearer ', '');
+// Role-based middleware
+const roleAuth = (role) => (req, res, next) => {
+  const { decoded, error } = verifyToken(req, res);
+  if (error) return res.status(error.status).json({ success: false, message: error.message });
 
-  if (!token) {
-    return res.status(401).json({ 
-      success: false, 
-      message: 'No token, authorization denied' 
-    });
+  if (decoded.type !== role) {
+    return res.status(403).json({ success: false, message: `Access denied. ${role} only.` });
   }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.type !== 'LIBRARIAN') {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Access denied. Librarian only.' 
-      });
-    }
-    req.user = decoded;
-    next();
-  } catch (error) {
-    res.status(401).json({ 
-      success: false, 
-      message: 'Token is not valid' 
-    });
-  }
+  req.user = decoded;
+  next();
 };
 
-module.exports = { authMiddleware, librarianAuth };
+module.exports = { authMiddleware, roleAuth };
