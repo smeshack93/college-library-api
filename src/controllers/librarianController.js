@@ -277,8 +277,11 @@ class LibrarianController {
             const { id } = req.params;
             const librarianId = req.user.id;
             
+            console.log(`📌 Approving request ID: ${id} by librarian: ${librarianId}`);
+            
             await connection.beginTransaction();
             
+            // Get the request details with book info
             const [requests] = await connection.execute(
                 `SELECT br.*, b.title, b.available_quantity, b.quantity 
                  FROM book_requests br
@@ -296,8 +299,12 @@ class LibrarianController {
             }
             
             const request = requests[0];
+            console.log(`📌 Request Type: ${request.request_type}`);
+            console.log(`📌 Current available_quantity: ${request.available_quantity}`);
             
+            // Update request status based on type
             if (request.request_type === 'RETURN') {
+                // For RETURN: set return_date and update related borrow request
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'APPROVED', 
@@ -307,7 +314,41 @@ class LibrarianController {
                      WHERE id = ?`,
                     [librarianId, id]
                 );
+                console.log(`✅ RETURN request updated with return_date`);
+                
+                // IMPORTANT: Update the original borrow request to COMPLETED
+                if (request.related_request_id) {
+                    await connection.execute(
+                        `UPDATE book_requests 
+                         SET status = 'COMPLETED' 
+                         WHERE id = ?`,
+                        [request.related_request_id]
+                    );
+                    console.log(`✅ Original borrow request ${request.related_request_id} marked as COMPLETED`);
+                } else {
+                    // If no related_request_id, try to find the original borrow request
+                    // for this book and user that is APPROVED
+                    const [borrowRequests] = await connection.execute(
+                        `SELECT id FROM book_requests 
+                         WHERE user_id = ? AND book_id = ? 
+                         AND request_type = 'BORROW' AND status = 'APPROVED'
+                         ORDER BY request_date DESC LIMIT 1`,
+                        [request.user_id, request.book_id]
+                    );
+                    
+                    if (borrowRequests.length > 0) {
+                        await connection.execute(
+                            `UPDATE book_requests 
+                             SET status = 'COMPLETED' 
+                             WHERE id = ?`,
+                            [borrowRequests[0].id]
+                        );
+                        console.log(`✅ Found and marked borrow request ${borrowRequests[0].id} as COMPLETED`);
+                    }
+                }
+                
             } else {
+                // For BORROW: set approval_date and calculate due dates
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'APPROVED', 
@@ -318,9 +359,12 @@ class LibrarianController {
                      WHERE id = ?`,
                     [librarianId, id]
                 );
+                console.log(`✅ BORROW request updated with approval_date and 14-day due_date`);
             }
             
+            // Handle quantity changes
             if (request.request_type === 'BORROW') {
+                // Decrease available quantity for borrow
                 const [updateResult] = await connection.execute(
                     `UPDATE books 
                      SET available_quantity = available_quantity - 1 
@@ -335,25 +379,51 @@ class LibrarianController {
                         message: 'Book is no longer available'
                     });
                 }
+                console.log(`✅ Borrow approved - quantity decreased by 1`);
+                
             } else if (request.request_type === 'RETURN') {
-                await connection.execute(
+                // Increase available quantity for return
+                const [updateResult] = await connection.execute(
                     `UPDATE books 
                      SET available_quantity = available_quantity + 1 
                      WHERE id = ?`,
                     [request.book_id]
                 );
+                
+                if (updateResult.affectedRows === 0) {
+                    await connection.rollback();
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Failed to update book quantity'
+                    });
+                }
+                console.log(`✅ Return approved - quantity increased by 1`);
             }
             
             await connection.commit();
             
+            // Get updated book info
+            const [updatedBooks] = await connection.execute(
+                'SELECT available_quantity FROM books WHERE id = ?',
+                [request.book_id]
+            );
+            const newQuantity = updatedBooks.length > 0 ? updatedBooks[0].available_quantity : 'unknown';
+            
+            console.log(`✅ Request ${id} approved successfully. New quantity: ${newQuantity}`);
+            
             res.json({ 
                 success: true, 
-                message: `${request.request_type} request approved successfully`
+                message: `${request.request_type} request approved successfully`,
+                data: {
+                    requestId: id,
+                    requestType: request.request_type,
+                    newAvailableQuantity: newQuantity
+                }
             });
             
         } catch (error) {
             await connection.rollback();
-            console.error('Approve request error:', error);
+            console.error('❌ Approve request error:', error);
             res.status(500).json({ 
                 success: false, 
                 message: 'Failed to approve request: ' + error.message 
