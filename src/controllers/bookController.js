@@ -120,17 +120,18 @@ class BookController {
 
     /**
      * Get all borrow requests for a specific user
-     * GET /api/books/user/:id/borrows
+     * GET /api/books/user/:id/borrows OR /api/books/users/:id/borrows
      */
     static async getUserBorrows(req, res) {
         try {
-            const userId = req.params.id;
+            // Support both :id and :userId parameter names from express routes
+            const userId = req.params.userId || req.params.id;
             
             console.log(`🔍 Fetching borrows for user ID: ${userId}`);
             console.log(`👤 Requesting user: ${req.user?.id}, Type: ${req.user?.type}`);
             
             // Verify the requesting user is the same as the userId (or is a librarian)
-            if (req.user.type !== 'LIBRARIAN' && req.user.id !== parseInt(userId)) {
+            if (req.user && req.user.type !== 'LIBRARIAN' && req.user.id !== parseInt(userId)) {
                 console.log(`❌ Unauthorized: User ${req.user.id} trying to access ${userId}`);
                 return res.status(403).json({
                     success: false,
@@ -158,17 +159,19 @@ class BookController {
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
+                    br.user_id as userId,
                     br.book_id as bookId,
                     br.request_date as requestDate,
                     br.status,
-                    br.request_type,
+                    br.request_type as requestType,
                     br.due_date as dueDate,
                     br.borrow_date as borrowDate,
                     br.approval_date as approvalDate,
+                    br.return_date as returnDate,
                     br.notes,
                     b.title as bookTitle,
                     b.author as bookAuthor,
-                    b.isbn,
+                    b.isbn as bookIsbn,
                     b.category,
                     b.nta_level as ntaLevel,
                     l.full_name as librarianName
@@ -182,18 +185,23 @@ class BookController {
             console.log(`📚 Found ${rows.length} borrow requests for user ${userId}`);
 
             const formattedBorrows = rows.map(row => ({
+                id: row.requestId,
                 requestId: row.requestId,
+                userId: row.userId,
                 bookId: row.bookId,
                 bookTitle: row.bookTitle || 'Unknown Book',
                 bookAuthor: row.bookAuthor || 'Unknown Author',
-                isbn: row.isbn || 'N/A',
+                bookIsbn: row.bookIsbn || 'N/A',
+                isbn: row.bookIsbn || 'N/A',
                 status: row.status || 'PENDING',
                 requestDate: row.requestDate,
+                approvalDate: row.approvalDate || null,
                 borrowDate: row.borrowDate || row.requestDate,
                 dueDate: row.dueDate || null,
+                returnDate: row.returnDate || null,
                 category: row.category || 'General',
                 ntaLevel: row.ntaLevel || 'N/A',
-                requestType: row.request_type || 'BORROW',
+                requestType: row.requestType || 'BORROW',
                 notes: row.notes || '',
                 librarianName: row.librarianName || null
             }));
@@ -214,7 +222,7 @@ class BookController {
     }
 
     /**
-     * Get borrow requests for the current user
+     * Get borrow requests for the current authenticated user
      * GET /api/books/my-borrows
      */
     static async getMyBorrows(req, res) {
