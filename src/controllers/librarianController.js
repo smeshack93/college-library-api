@@ -1,3 +1,4 @@
+// controllers/librarianController.js
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
@@ -6,6 +7,7 @@ class LibrarianController {
 
     /**
      * Librarian login
+     * POST /api/librarian/login
      */
     static async login(req, res) {
         try {
@@ -66,6 +68,7 @@ class LibrarianController {
 
     /**
      * Verify librarian identity for password reset
+     * POST /api/librarian/verify-identity
      */
     static async verifyIdentity(req, res) {
         try {
@@ -117,6 +120,7 @@ class LibrarianController {
 
     /**
      * Reset librarian password
+     * POST /api/librarian/reset-password
      */
     static async resetPassword(req, res) {
         try {
@@ -171,6 +175,7 @@ class LibrarianController {
 
     /**
      * Get dashboard statistics
+     * GET /api/librarian/statistics
      */
     static async getStatistics(req, res) {
         try {
@@ -232,6 +237,7 @@ class LibrarianController {
                     br.request_date DESC
             `);
             
+            // Format object keys matching exact SQL aliases
             const formattedRequests = requests.map(req => ({
                 id: req.id,
                 userName: req.userName,
