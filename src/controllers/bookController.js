@@ -1,4 +1,4 @@
-// src/controllers/bookController.js
+// controllers/bookController.js
 const Book = require('../models/Book');
 const pool = require('../config/database');
 
@@ -119,7 +119,7 @@ class BookController {
     }
 
     /**
-     * Request to return an approved borrowed book
+     * Request to return a borrowed book
      * POST /api/books/return
      */
     static async requestReturn(req, res) {
@@ -134,7 +134,7 @@ class BookController {
                 });
             }
 
-            // 1. Verify the original borrow request exists, belongs to user, and is currently APPROVED
+            // Verify the borrow request exists and belongs to this user
             const [borrowRequests] = await pool.execute(
                 `SELECT id, book_id, status, request_type 
                  FROM book_requests 
@@ -145,20 +145,21 @@ class BookController {
             if (borrowRequests.length === 0) {
                 return res.status(404).json({
                     success: false,
-                    message: 'Approved borrow record not found for this user'
+                    message: 'Borrow record not found or not approved'
                 });
             }
 
             const borrowRequest = borrowRequests[0];
 
+            // Check if this is already a borrow request (not a return)
             if (borrowRequest.request_type !== 'BORROW') {
                 return res.status(400).json({
                     success: false,
-                    message: 'Target record is not an active borrow request'
+                    message: 'This is not a borrow record'
                 });
             }
 
-            // 2. Check for an existing pending return request for this book
+            // Check if there's already a pending return request for this book
             const [existingReturn] = await pool.execute(
                 `SELECT id FROM book_requests 
                  WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status = 'PENDING'`,
@@ -172,34 +173,42 @@ class BookController {
                 });
             }
 
-            // 3. Create the return request
-            let insertId;
-            try {
-                // Try inserting with related_request_id if column exists
-                const [result] = await pool.execute(
-                    `INSERT INTO book_requests 
-                     (user_id, book_id, request_type, status, request_date, related_request_id, notes)
-                     VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?, ?)`,
-                    [userId, bookId, requestId, 'Return request for borrowed book']
-                );
-                insertId = result.insertId;
-            } catch (dbErr) {
-                // Fallback standard insert if related_request_id column is absent
-                const [resultFallback] = await pool.execute(
-                    `INSERT INTO book_requests 
-                     (user_id, book_id, request_type, status, request_date, notes)
-                     VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?)`,
-                    [userId, bookId, 'Return request for borrowed book']
-                );
-                insertId = resultFallback.insertId;
+            // Check if there's already an approved return (meaning book is already returned)
+            const [approvedReturn] = await pool.execute(
+                `SELECT id FROM book_requests 
+                 WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status = 'APPROVED'`,
+                [userId, bookId]
+            );
+
+            if (approvedReturn.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'This book has already been returned'
+                });
             }
 
-            console.log(`📤 Return request #${insertId} created for user ${userId}, book ${bookId}`);
+            // Check if the borrow request is already COMPLETED
+            if (borrowRequest.status === 'COMPLETED') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'This book has already been returned'
+                });
+            }
+
+            // Create the return request with related_request_id
+            const [result] = await pool.execute(
+                `INSERT INTO book_requests 
+                 (user_id, book_id, request_type, status, request_date, related_request_id, notes)
+                 VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?, ?)`,
+                [userId, bookId, requestId, 'Return request for borrowed book']
+            );
+
+            console.log(`📤 Return request created for user ${userId}, book ${bookId}, related to request ${requestId}`);
 
             res.status(201).json({
                 success: true,
                 message: 'Return request submitted successfully',
-                requestId: insertId
+                requestId: result.insertId
             });
 
         } catch (error) {
