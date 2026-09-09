@@ -5,6 +5,199 @@ const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 class LibrarianController {
 
     /**
+     * Librarian login
+     */
+    static async login(req, res) {
+        try {
+            const { username, password } = req.body;
+            
+            const [librarians] = await pool.execute(
+                'SELECT * FROM librarians WHERE username = ? AND is_active = TRUE',
+                [username]
+            );
+            
+            if (librarians.length === 0) {
+                return res.status(401).json({ 
+                    success: false, 
+                    message: 'Invalid credentials' 
+                });
+            }
+            
+            const librarian = librarians[0];
+            const isValid = verifyPassword(password, librarian.password);
+            
+            if (!isValid) {
+                return res.status(401).json({ 
+                    success: false, 
+                    message: 'Invalid credentials' 
+                });
+            }
+            
+            const token = jwt.sign(
+                { 
+                    id: librarian.id, 
+                    username: librarian.username,
+                    type: 'LIBRARIAN' 
+                },
+                process.env.JWT_SECRET || 'your-secret-key-change-this',
+                { expiresIn: '24h' }
+            );
+            
+            res.json({ 
+                success: true, 
+                token, 
+                librarian: { 
+                    id: librarian.id, 
+                    username: librarian.username,
+                    fullName: librarian.full_name,
+                    employeeId: librarian.employee_id,
+                    email: librarian.email,
+                    forcePasswordChange: librarian.force_password_change === 1
+                } 
+            });
+        } catch (error) {
+            console.error('Librarian login error:', error);
+            res.status(500).json({ 
+                success: false, 
+                message: 'Server error: ' + error.message 
+            });
+        }
+    }
+
+    /**
+     * Verify librarian identity for password reset
+     */
+    static async verifyIdentity(req, res) {
+        try {
+            const { employeeId, fullName, email } = req.body;
+            
+            if (!employeeId || !fullName || !email) {
+                return res.status(400).json({ 
+                    success: false, 
+                    message: 'All fields are required' 
+                });
+            }
+            
+            const [librarians] = await pool.execute(
+                `SELECT id, employee_id, full_name, email 
+                 FROM librarians 
+                 WHERE employee_id = ? AND is_active = TRUE`,
+                [employeeId]
+            );
+            
+            if (librarians.length === 0) {
+                return res.status(401).json({ 
+                    success: false, 
+                    message: 'Librarian not found' 
+                });
+            }
+            
+            const librarian = librarians[0];
+            
+            if (librarian.full_name.toLowerCase() !== fullName.toLowerCase() ||
+                librarian.email.toLowerCase() !== email.toLowerCase()) {
+                return res.status(401).json({ 
+                    success: false, 
+                    message: 'Information does not match our records' 
+                });
+            }
+            
+            res.json({ 
+                success: true, 
+                message: 'Identity verified successfully' 
+            });
+        } catch (error) {
+            console.error('Verify identity error:', error);
+            res.status(500).json({ 
+                success: false, 
+                message: 'Server error: ' + error.message 
+            });
+        }
+    }
+
+    /**
+     * Reset librarian password
+     */
+    static async resetPassword(req, res) {
+        try {
+            const { employeeId, newPassword } = req.body;
+            
+            if (!employeeId || !newPassword) {
+                return res.status(400).json({ 
+                    success: false, 
+                    message: 'Employee ID and new password are required' 
+                });
+            }
+            
+            if (newPassword.length < 6) {
+                return res.status(400).json({ 
+                    success: false, 
+                    message: 'Password must be at least 6 characters' 
+                });
+            }
+            
+            const hashedPassword = hashPassword(newPassword);
+            
+            const [result] = await pool.execute(
+                `UPDATE librarians 
+                 SET password = ?, 
+                     password_format = 'PBKDF2',
+                     password_migrated = 1,
+                     force_password_change = 0,
+                     password_updated_at = NOW()
+                 WHERE employee_id = ? AND is_active = TRUE`,
+                [hashedPassword, employeeId]
+            );
+            
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ 
+                    success: false, 
+                    message: 'Librarian not found or inactive' 
+                });
+            }
+            
+            res.json({ 
+                success: true, 
+                message: 'Password reset successfully' 
+            });
+        } catch (error) {
+            console.error('Reset password error:', error);
+            res.status(500).json({ 
+                success: false, 
+                message: 'Server error: ' + error.message 
+            });
+        }
+    }
+
+    /**
+     * Get dashboard statistics
+     */
+    static async getStatistics(req, res) {
+        try {
+            const [stats] = await pool.execute(`
+                SELECT 
+                    (SELECT COUNT(*) FROM users WHERE is_active = 1) as activeUsers,
+                    (SELECT COUNT(*) FROM books) as totalBooks,
+                    (SELECT IFNULL(SUM(available_quantity), 0) FROM books) as availableBooks,
+                    (SELECT COUNT(*) FROM book_requests WHERE status = 'PENDING') as pendingRequests,
+                    (SELECT COUNT(*) FROM book_requests) as totalRequests,
+                    (SELECT COUNT(*) FROM librarians WHERE is_active = 1) as activeLibrarians
+            `);
+            
+            res.json({ 
+                success: true, 
+                data: stats[0] 
+            });
+        } catch (error) {
+            console.error('Get statistics error:', error);
+            res.status(500).json({ 
+                success: false, 
+                message: error.message 
+            });
+        }
+    }
+
+    /**
      * Get pending book requests (both BORROW and RETURN)
      * GET /api/librarian/requests/pending
      */
@@ -39,9 +232,24 @@ class LibrarianController {
                     br.request_date DESC
             `);
             
+            const formattedRequests = requests.map(req => ({
+                id: req.id,
+                userName: req.userName,
+                userUsername: req.userUsername,
+                userNtaLevel: req.userNtaLevel,
+                bookTitle: req.bookTitle,
+                bookAuthor: req.bookAuthor,
+                bookIsbn: req.bookIsbn,
+                requestDate: req.request_date,
+                requestType: req.request_type || 'BORROW',
+                status: req.status,
+                notes: req.notes,
+                availableQuantity: req.availableQuantity
+            }));
+            
             res.json({ 
                 success: true, 
-                data: requests 
+                data: formattedRequests 
             });
         } catch (error) {
             console.error('Get pending requests error:', error);
@@ -143,6 +351,62 @@ class LibrarianController {
             res.status(500).json({ 
                 success: false, 
                 message: 'Failed to approve request: ' + error.message 
+            });
+        } finally {
+            connection.release();
+        }
+    }
+
+    /**
+     * Reject a book request
+     * POST /api/librarian/requests/:id/reject
+     */
+    static async rejectRequest(req, res) {
+        const connection = await pool.getConnection();
+        
+        try {
+            const { id } = req.params;
+            const { notes } = req.body;
+            const librarianId = req.user.id;
+            
+            await connection.beginTransaction();
+            
+            const [requests] = await connection.execute(
+                `SELECT * FROM book_requests WHERE id = ? AND status = 'PENDING'`,
+                [id]
+            );
+            
+            if (requests.length === 0) {
+                await connection.rollback();
+                return res.status(404).json({ 
+                    success: false, 
+                    message: 'Request not found or already processed' 
+                });
+            }
+            
+            await connection.execute(
+                `UPDATE book_requests 
+                 SET status = 'REJECTED', 
+                     approved_by = ?, 
+                     approval_date = NOW(),
+                     notes = ?
+                 WHERE id = ?`,
+                [librarianId, notes || 'No reason provided', id]
+            );
+            
+            await connection.commit();
+            
+            res.json({ 
+                success: true, 
+                message: 'Request rejected successfully' 
+            });
+            
+        } catch (error) {
+            await connection.rollback();
+            console.error('Reject request error:', error);
+            res.status(500).json({ 
+                success: false, 
+                message: error.message 
             });
         } finally {
             connection.release();
