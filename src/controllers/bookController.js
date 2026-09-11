@@ -176,7 +176,7 @@ class BookController {
             // Check if there's already an approved return (meaning book is already returned)
             const [approvedReturn] = await pool.execute(
                 `SELECT id FROM book_requests 
-                 WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status = 'APPROVED'`,
+                 WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status IN ('APPROVED', 'RETURNED')`,
                 [userId, bookId]
             );
 
@@ -188,7 +188,7 @@ class BookController {
             }
 
             // Check if the borrow request is already COMPLETED
-            if (borrowRequest.status === 'COMPLETED') {
+            if (borrowRequest.status === 'COMPLETED' || borrowRequest.status === 'RETURNED') {
                 return res.status(400).json({
                     success: false,
                     message: 'This book has already been returned'
@@ -248,7 +248,7 @@ class BookController {
             console.log(`✅ User found: ${users[0].full_name}`);
 
             // Get ALL borrow requests for this user (including all statuses)
-            // Include related request info to check if return was already processed
+            // Include related request info to check if return was already processed or pending
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
@@ -267,9 +267,14 @@ class BookController {
                     b.category,
                     b.nta_level as ntaLevel,
                     l.full_name as librarianName,
-                    -- Check if there's an approved return for this borrow request
+                    -- Check if there's an approved or returned request for this borrow
                     (SELECT COUNT(*) FROM book_requests 
-                     WHERE related_request_id = br.id AND request_type = 'RETURN' AND status = 'APPROVED') as has_approved_return
+                     WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id)) 
+                       AND request_type = 'RETURN' AND status IN ('APPROVED', 'RETURNED')) as has_approved_return,
+                    -- Check if there's a pending return request for this borrow
+                    (SELECT COUNT(*) FROM book_requests 
+                     WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id)) 
+                       AND request_type = 'RETURN' AND status = 'PENDING') as has_pending_return
                 FROM book_requests br
                 JOIN books b ON br.book_id = b.id
                 LEFT JOIN librarians l ON br.approved_by = l.id
@@ -304,7 +309,8 @@ class BookController {
                 notes: row.notes || '',
                 librarianName: row.librarianName || null,
                 relatedRequestId: row.related_request_id || 0,
-                hasApprovedReturn: row.has_approved_return > 0  // Flag for return status
+                hasApprovedReturn: row.has_approved_return > 0,
+                hasPendingReturn: row.has_pending_return > 0
             }));
 
             res.json({
@@ -454,6 +460,7 @@ class BookController {
                 actionMessage = 'Borrow request approved';
                 
             } else if (request.request_type === 'RETURN') {
+                // Update return request status
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'RETURNED', 
@@ -464,6 +471,16 @@ class BookController {
                      WHERE id = ?`,
                     [librarianId, notes, id]
                 );
+
+                // Update original borrow record status to prevent re-triggering returns
+                if (request.related_request_id) {
+                    await connection.execute(
+                        `UPDATE book_requests 
+                         SET status = 'RETURNED' 
+                         WHERE id = ?`,
+                        [request.related_request_id]
+                    );
+                }
 
                 await connection.execute(
                     `UPDATE books 
