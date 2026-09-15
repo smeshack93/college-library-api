@@ -1,5 +1,7 @@
-const User = require('../models/User');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const { sendResetEmail } = require('../config/email');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 
 class AuthController {
@@ -132,6 +134,114 @@ class AuthController {
       res.status(500).json({ 
         success: false, 
         message: error.message || 'Registration failed' 
+      });
+    }
+  }
+
+  /**
+   * Request password reset — sends email with token link
+   * POST /api/auth/forgot-password
+   */
+  static async forgotPassword(req, res) {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Email is required' 
+        });
+      }
+
+      const user = await User.findByEmail(email);
+
+      // Always return success response to prevent email enumeration
+      if (!user) {
+        return res.json({ 
+          success: true, 
+          message: 'If that email exists, a reset link has been sent.' 
+        });
+      }
+
+      // Generate cryptographically secure random token
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes validity
+
+      await User.setResetToken(email, token, expiresAt);
+
+      // Build deep-link or web reset link
+      const baseUrl = process.env.APP_RESET_URL || 'collegelibrary://reset-password';
+      const resetLink = `${baseUrl}?token=${token}&email=${encodeURIComponent(email)}`;
+
+      try {
+        await sendResetEmail(email, resetLink, user.full_name);
+        console.log(`📧 Reset email sent to: ${email}`);
+      } catch (mailErr) {
+        console.error('Email send failed:', mailErr);
+        // Do not leak email sending failures directly to end user
+      }
+
+      res.json({ 
+        success: true, 
+        message: 'If that email exists, a reset link has been sent.' 
+      });
+
+    } catch (error) {
+      console.error('Forgot password error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Server error' 
+      });
+    }
+  }
+
+  /**
+   * Reset password using token
+   * POST /api/auth/reset-password
+   */
+  static async resetPassword(req, res) {
+    try {
+      const { token, newPassword } = req.body;
+
+      if (!token || !newPassword) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Token and new password are required' 
+        });
+      }
+
+      if (newPassword.length < 8) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Password must be at least 8 characters' 
+        });
+      }
+
+      const user = await User.findByResetToken(token);
+
+      if (!user) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid or expired reset token' 
+        });
+      }
+
+      const hashedPassword = hashPassword(newPassword);
+      await User.updatePassword(user.id, hashedPassword);
+      await User.clearResetToken(user.id);
+
+      console.log(`✅ Password reset for user: ${user.email}`);
+
+      res.json({ 
+        success: true, 
+        message: 'Password reset successfully. You can now login.' 
+      });
+
+    } catch (error) {
+      console.error('Reset password error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Server error' 
       });
     }
   }
