@@ -28,7 +28,8 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
-    "mysql2": "^3.6.5"
+    "mysql2": "^3.6.5",
+    "nodemailer": "^6.9.13"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
@@ -39,10 +40,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-repo/college-library-api.git"
+    "url": "https://github.com/smeshack93/college-library-api.git"
   },
   "bugs": {
-    "url": "https://github.com/your-repo/college-library-api/issues"
+    "url": "https://github.com/smeshack93/college-library-api/issues"
   },
-  "homepage": "https://github.com/your-repo/college-library-api#readme"
+  "homepage": "https://github.com/smeshack93/college-library-api#readme"
 }
