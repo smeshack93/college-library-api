@@ -1,21 +1,53 @@
 const express = require('express');
 const router = express.Router();
-const { body } = require('express-validator');
+const { body, validationResult } = require('express-validator');
 const AuthController = require('../controllers/authController');
+
+/**
+ * Middleware to evaluate express-validator results
+ */
+const validateRequest = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: errors.array()[0].msg, // Returns the first error message
+      errors: errors.array()
+    });
+  }
+  next();
+};
+
+// --- Authentication Routes ---
 
 // Login
 router.post('/login', [
-  body('email').isEmail().normalizeEmail(),
-  body('password').notEmpty()
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('password').notEmpty().withMessage('Password is required'),
+  validateRequest
 ], AuthController.login);
 
 // Register
 router.post('/register', [
-  body('username').notEmpty().trim(),
-  body('email').isEmail().normalizeEmail(),
-  body('fullName').notEmpty().trim(), // Matches req.body.fullName
-  body('password').isLength({ min: 6 }),
-  body('ntaLevel').notEmpty()        // Matches req.body.ntaLevel
+  body('username').notEmpty().withMessage('Username is required').trim(),
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('fullName').notEmpty().withMessage('Full name is required').trim(),
+  body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+  body('ntaLevel').notEmpty().withMessage('NTA Level is required'),
+  validateRequest
 ], AuthController.register);
+
+// Forgot password — request reset link
+router.post('/forgot-password', [
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  validateRequest
+], AuthController.forgotPassword);
+
+// Reset password — submit new password with token
+router.post('/reset-password', [
+  body('token').notEmpty().withMessage('Reset token is required'),
+  body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
+  validateRequest
+], AuthController.resetPassword);
 
 module.exports = router;
