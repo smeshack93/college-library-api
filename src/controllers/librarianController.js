@@ -495,7 +495,12 @@ class LibrarianController {
      */
     static async getRequestHistory(req, res) {
         try {
-            const { status, requestType, search, limit = 100 } = req.query;
+            const { status, requestType, search } = req.query;
+
+            // Parse pagination parameters safely as integers
+            const limit = Math.max(1, parseInt(req.query.limit, 10) || 100);
+            const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+            const offset = (page - 1) * limit;
 
             let query = `
                 SELECT 
@@ -547,8 +552,9 @@ class LibrarianController {
                 params.push(searchPattern, searchPattern, searchPattern);
             }
 
-            query += ` ORDER BY COALESCE(br.approval_date, br.request_date) DESC LIMIT ?`;
-            params.push(parseInt(limit));
+            query += ` ORDER BY COALESCE(br.approval_date, br.request_date) DESC LIMIT ? OFFSET ?`;
+            // Ensure limit and offset are passed as Numbers
+            params.push(limit, offset);
 
             const [rows] = await pool.execute(query, params);
 
@@ -580,6 +586,8 @@ class LibrarianController {
             res.json({
                 success: true,
                 count: formattedHistory.length,
+                page,
+                limit,
                 data: formattedHistory
             });
 
