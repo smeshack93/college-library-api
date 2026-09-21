@@ -497,7 +497,7 @@ class LibrarianController {
         try {
             const { status, requestType, search } = req.query;
 
-            // Parse pagination parameters safely as integers
+            // Ensure pagination values are positive integers
             const limit = Math.max(1, parseInt(req.query.limit, 10) || 100);
             const page = Math.max(1, parseInt(req.query.page, 10) || 1);
             const offset = (page - 1) * limit;
@@ -552,11 +552,11 @@ class LibrarianController {
                 params.push(searchPattern, searchPattern, searchPattern);
             }
 
-            query += ` ORDER BY COALESCE(br.approval_date, br.request_date) DESC LIMIT ? OFFSET ?`;
-            // Ensure limit and offset are passed as Numbers
-            params.push(limit, offset);
+            // Interpolate sanitized integers directly into the query to prevent prepared statement binding issues
+            query += ` ORDER BY COALESCE(br.approval_date, br.request_date) DESC LIMIT ${limit} OFFSET ${offset}`;
 
-            const [rows] = await pool.execute(query, params);
+            // Use pool.query instead of pool.execute
+            const [rows] = await pool.query(query, params);
 
             const formattedHistory = rows.map(row => ({
                 id: row.id,
