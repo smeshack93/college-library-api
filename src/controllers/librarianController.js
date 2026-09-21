@@ -488,6 +488,185 @@ class LibrarianController {
             connection.release();
         }
     }
+
+    /**
+     * Get history of processed requests (approved, rejected, completed, returned)
+     * GET /api/librarian/requests/history
+     */
+    static async getRequestHistory(req, res) {
+        try {
+            const { status, requestType, search, limit = 100 } = req.query;
+
+            let query = `
+                SELECT 
+                    br.id,
+                    br.user_id,
+                    br.book_id,
+                    br.request_date,
+                    br.status,
+                    br.request_type,
+                    br.approval_date,
+                    br.borrow_date,
+                    br.due_date,
+                    br.return_date,
+                    br.notes,
+                    br.remark,
+                    br.remark_by,
+                    br.remark_date,
+                    u.full_name as userName,
+                    u.username as userUsername,
+                    u.nta_level as userNtaLevel,
+                    b.title as bookTitle,
+                    b.author as bookAuthor,
+                    b.isbn as bookIsbn,
+                    l.full_name as librarianName,
+                    rl.full_name as remarkByName
+                FROM book_requests br
+                JOIN users u ON br.user_id = u.id
+                JOIN books b ON br.book_id = b.id
+                LEFT JOIN librarians l ON br.approved_by = l.id
+                LEFT JOIN librarians rl ON br.remark_by = rl.id
+                WHERE br.status IN ('APPROVED', 'REJECTED', 'COMPLETED', 'RETURNED')
+            `;
+
+            const params = [];
+
+            if (status && status !== 'ALL') {
+                query += ` AND br.status = ?`;
+                params.push(status);
+            }
+
+            if (requestType && requestType !== 'ALL') {
+                query += ` AND br.request_type = ?`;
+                params.push(requestType);
+            }
+
+            if (search && search.trim() !== '') {
+                query += ` AND (u.full_name LIKE ? OR b.title LIKE ? OR u.username LIKE ?)`;
+                const searchPattern = `%${search.trim()}%`;
+                params.push(searchPattern, searchPattern, searchPattern);
+            }
+
+            query += ` ORDER BY COALESCE(br.approval_date, br.request_date) DESC LIMIT ?`;
+            params.push(parseInt(limit));
+
+            const [rows] = await pool.execute(query, params);
+
+            const formattedHistory = rows.map(row => ({
+                id: row.id,
+                userId: row.user_id,
+                bookId: row.book_id,
+                userName: row.userName || 'Unknown',
+                userUsername: row.userUsername || '',
+                userNtaLevel: row.userNtaLevel || 'N/A',
+                bookTitle: row.bookTitle || 'Unknown Book',
+                bookAuthor: row.bookAuthor || 'Unknown Author',
+                bookIsbn: row.bookIsbn || '',
+                requestDate: row.request_date,
+                requestType: row.request_type || 'BORROW',
+                status: row.status || 'PENDING',
+                approvalDate: row.approval_date,
+                borrowDate: row.borrow_date,
+                dueDate: row.due_date,
+                returnDate: row.return_date,
+                notes: row.notes || '',
+                remark: row.remark || '',
+                remarkBy: row.remark_by,
+                remarkByName: row.remarkByName || '',
+                remarkDate: row.remark_date,
+                librarianName: row.librarianName || ''
+            }));
+
+            res.json({
+                success: true,
+                count: formattedHistory.length,
+                data: formattedHistory
+            });
+
+        } catch (error) {
+            console.error('Get request history error:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Failed to fetch request history: ' + error.message
+            });
+        }
+    }
+
+    /**
+     * Add or update a remark on a historical request
+     * POST /api/librarian/requests/:id/remark
+     */
+    static async addRequestRemark(req, res) {
+        try {
+            const { id } = req.params;
+            const { remark } = req.body;
+            const librarianId = req.user.id;
+
+            if (!remark || remark.trim() === '') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Remark text is required'
+                });
+            }
+
+            if (remark.length > 1000) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Remark must not exceed 1000 characters'
+                });
+            }
+
+            // Verify the request exists and is in a historical state
+            const [requests] = await pool.execute(
+                `SELECT id, status FROM book_requests 
+                 WHERE id = ? AND status IN ('APPROVED', 'REJECTED', 'COMPLETED', 'RETURNED')`,
+                [id]
+            );
+
+            if (requests.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Request not found or not eligible for remarks'
+                });
+            }
+
+            await pool.execute(
+                `UPDATE book_requests 
+                 SET remark = ?, 
+                     remark_by = ?, 
+                     remark_date = NOW()
+                 WHERE id = ?`,
+                [remark.trim(), librarianId, id]
+            );
+
+            // Fetch the updated record with librarian name
+            const [updated] = await pool.execute(
+                `SELECT br.remark, br.remark_date, l.full_name as remarkByName
+                 FROM book_requests br
+                 LEFT JOIN librarians l ON br.remark_by = l.id
+                 WHERE br.id = ?`,
+                [id]
+            );
+
+            res.json({
+                success: true,
+                message: 'Remark added successfully',
+                data: {
+                    requestId: parseInt(id),
+                    remark: updated[0].remark,
+                    remarkByName: updated[0].remarkByName || '',
+                    remarkDate: updated[0].remark_date
+                }
+            });
+
+        } catch (error) {
+            console.error('Add remark error:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Failed to add remark: ' + error.message
+            });
+        }
+    }
 }
 
 module.exports = LibrarianController;
