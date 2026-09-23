@@ -601,7 +601,7 @@ class LibrarianController {
     }
 
     /**
-     * Add or update a remark on a historical request
+     * Add a remark to a historical request (One-time submission)
      * POST /api/librarian/requests/:id/remark
      */
     static async addRequestRemark(req, res) {
@@ -624,9 +624,9 @@ class LibrarianController {
                 });
             }
 
-            // Verify the request exists and is in a historical state
+            // Verify the request exists, is in a historical state, and fetch existing remark
             const [requests] = await pool.execute(
-                `SELECT id, status FROM book_requests 
+                `SELECT id, status, remark FROM book_requests 
                  WHERE id = ? AND status IN ('APPROVED', 'REJECTED', 'COMPLETED', 'RETURNED')`,
                 [id]
             );
@@ -635,6 +635,14 @@ class LibrarianController {
                 return res.status(404).json({
                     success: false,
                     message: 'Request not found or not eligible for remarks'
+                });
+            }
+
+            // Block modification if a remark already exists
+            if (requests[0].remark && requests[0].remark.trim() !== '') {
+                return res.status(409).json({
+                    success: false,
+                    message: 'A remark has already been added to this request and cannot be modified'
                 });
             }
 
