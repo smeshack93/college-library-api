@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Librarian = require('../models/Librarian');
 const { sendResetEmail } = require('../config/email');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 
@@ -37,7 +38,7 @@ class AuthController {
 
       const token = jwt.sign(
         { id: user.id, email: user.email, type: 'STUDENT' }, 
-        process.env.JWT_SECRET, 
+        process.env.JWT_SECRET || 'your-secret-key-change-this', 
         { expiresIn: '7d' }
       );
 
@@ -228,13 +229,16 @@ class AuthController {
   }
 
   /**
-   * Change password for the logged-in user.
+   * Universal Change Password endpoint (Handles both Students & Librarians)
    * POST /api/auth/change-password
-   * Body: { userId, currentPassword, newPassword }
+   * Body: { userId, currentPassword, newPassword, userType }
    */
   static async changePassword(req, res) {
     try {
       const { userId, currentPassword, newPassword } = req.body;
+      
+      // Determine account type from token payload OR request body
+      const userType = req.user?.type || req.body.userType || req.body.type;
 
       if (!userId || !currentPassword || !newPassword) {
         return res.status(400).json({
@@ -250,18 +254,34 @@ class AuthController {
         });
       }
 
-      // FIX: Use findByIdWithPassword to retrieve user WITH password column
-      const user = await User.findByIdWithPassword(userId);
+      let account = null;
+      let isLibrarian = (userType === 'LIBRARIAN');
 
-      if (!user || user.is_active === 0) {
+      // Attempt to look up librarian first if userType explicitly indicates LIBRARIAN
+      if (isLibrarian) {
+        account = await Librarian.findByIdWithPassword(userId);
+      } else {
+        // Look up student user
+        account = await User.findByIdWithPassword(userId);
+
+        // Fallback: If not found in users table, check librarians table automatically
+        if (!account) {
+          account = await Librarian.findByIdWithPassword(userId);
+          if (account) {
+            isLibrarian = true;
+          }
+        }
+      }
+
+      if (!account || account.is_active === 0 || account.is_active === false) {
         return res.status(404).json({
           success: false,
           message: 'User not found'
         });
       }
 
-      // Verify current password
-      const isValid = verifyPassword(currentPassword, user.password);
+      // Verify current password against stored hash
+      const isValid = verifyPassword(currentPassword, account.password);
       if (!isValid) {
         return res.status(401).json({
           success: false,
@@ -269,11 +289,16 @@ class AuthController {
         });
       }
 
-      // Hash and store the new password
+      // Hash new password using standard PBKDF2
       const hashedPassword = hashPassword(newPassword);
-      await User.updatePassword(user.id, hashedPassword);
 
-      console.log(`✅ Password changed for user id: ${user.id}`);
+      if (isLibrarian) {
+        await Librarian.updatePassword(account.id, hashedPassword);
+        console.log(`✅ Password changed for Librarian ID: ${account.id}`);
+      } else {
+        await User.updatePassword(account.id, hashedPassword);
+        console.log(`✅ Password changed for Student ID: ${account.id}`);
+      }
 
       return res.json({
         success: true,
