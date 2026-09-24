@@ -25,7 +25,6 @@ class AuthController {
         });
       }
 
-      // Use the unified password verification
       const isValid = verifyPassword(password, user.password);
       
       if (!isValid) {
@@ -67,7 +66,6 @@ class AuthController {
     try {
       const { username, email, fullName, password, ntaLevel } = req.body;
 
-      // Validate required fields
       if (!username || !email || !fullName || !password || !ntaLevel) {
         return res.status(400).json({ 
           success: false, 
@@ -75,7 +73,6 @@ class AuthController {
         });
       }
 
-      // Validate NTA Level Enum
       const allowedLevels = ['NTA Level 4', 'NTA Level 5', 'NTA Level 6', 'NVA', 'Secretarial'];
       if (!allowedLevels.includes(ntaLevel)) {
         return res.status(400).json({ 
@@ -84,7 +81,6 @@ class AuthController {
         });
       }
 
-      // Validate password strength
       if (password.length < 8) {
         return res.status(400).json({ 
           success: false, 
@@ -92,7 +88,6 @@ class AuthController {
         });
       }
 
-      // Check if user exists
       const existingUser = await User.findByEmail(email);
       if (existingUser) {
         return res.status(400).json({ 
@@ -101,10 +96,8 @@ class AuthController {
         });
       }
 
-      // Hash password using PBKDF2 (matching Java format)
       const hashedPassword = hashPassword(password);
 
-      // Create user
       const userId = await User.create({
         username,
         email,
@@ -138,10 +131,6 @@ class AuthController {
     }
   }
 
-  /**
-   * Request password reset — sends email with token link
-   * POST /api/auth/forgot-password
-   */
   static async forgotPassword(req, res) {
     try {
       const { email } = req.body;
@@ -155,7 +144,6 @@ class AuthController {
 
       const user = await User.findByEmail(email);
 
-      // Always return success response to prevent email enumeration
       if (!user) {
         return res.json({ 
           success: true, 
@@ -163,13 +151,11 @@ class AuthController {
         });
       }
 
-      // Generate cryptographically secure random token
       const token = crypto.randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes validity
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
 
       await User.setResetToken(email, token, expiresAt);
 
-      // Build deep-link or web reset link
       const baseUrl = process.env.APP_RESET_URL || 'collegelibrary://reset-password';
       const resetLink = `${baseUrl}?token=${token}&email=${encodeURIComponent(email)}`;
 
@@ -178,7 +164,6 @@ class AuthController {
         console.log(`📧 Reset email sent to: ${email}`);
       } catch (mailErr) {
         console.error('Email send failed:', mailErr);
-        // Do not leak email sending failures directly to end user
       }
 
       res.json({ 
@@ -195,10 +180,6 @@ class AuthController {
     }
   }
 
-  /**
-   * Reset password using token
-   * POST /api/auth/reset-password
-   */
   static async resetPassword(req, res) {
     try {
       const { token, newPassword } = req.body;
@@ -250,7 +231,6 @@ class AuthController {
    * Change password for the logged-in user.
    * POST /api/auth/change-password
    * Body: { userId, currentPassword, newPassword }
-   * Works for both students and librarians (same `users` table).
    */
   static async changePassword(req, res) {
     try {
@@ -270,8 +250,8 @@ class AuthController {
         });
       }
 
-      // Look up user using User model (avoids requiring database connection directly)
-      const user = await User.findById(userId);
+      // FIX: Use findByIdWithPassword to retrieve user WITH password column
+      const user = await User.findByIdWithPassword(userId);
 
       if (!user || user.is_active === 0) {
         return res.status(404).json({
