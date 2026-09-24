@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const AuthController = require('../controllers/authController');
+const { optionalAuthMiddleware } = require('../middleware/auth');
 
 /**
  * Middleware to evaluate express-validator results
@@ -51,8 +52,10 @@ router.post('/reset-password', [
 ], AuthController.resetPassword);
 
 // Change password (student or librarian)
+// Uses optionalAuthMiddleware so missing/expired tokens won't cause automatic 401 response
 router.post('/change-password', [
-  body('userId').isInt({ min: 1 }).withMessage('Valid userId is required'),
+  optionalAuthMiddleware,
+  body('userId').optional().isInt({ min: 1 }).withMessage('Valid userId is required'),
   body('currentPassword').notEmpty().withMessage('Current password is required'),
   body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
   validateRequest
