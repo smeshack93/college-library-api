@@ -1,7 +1,6 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { pool } = require('../config/db');
 const { sendResetEmail } = require('../config/email');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 
@@ -271,20 +270,15 @@ class AuthController {
         });
       }
 
-      // Look up the user
-      const [rows] = await pool.execute(
-        'SELECT id, password FROM users WHERE id = ? AND is_active = 1',
-        [userId]
-      );
+      // Look up user using User model (avoids requiring database connection directly)
+      const user = await User.findById(userId);
 
-      if (rows.length === 0) {
+      if (!user || user.is_active === 0) {
         return res.status(404).json({
           success: false,
           message: 'User not found'
         });
       }
-
-      const user = rows[0];
 
       // Verify current password
       const isValid = verifyPassword(currentPassword, user.password);
