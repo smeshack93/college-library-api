@@ -246,22 +246,20 @@ class AuthController {
   }
 
   /**
-   * Universal Change Password Endpoint (Handles both Students and Librarians safely)
+   * Universal Change Password Endpoint (Handles both Students and Librarians)
    * POST /api/auth/change-password
-   * Requires: authMiddleware
    */
   static async changePassword(req, res) {
     try {
-      // Get user ID and account type directly from authenticated JWT payload
-      const userId = req.user?.id || req.body.userId;
+      const { userId, currentPassword, newPassword } = req.body;
+      
+      const activeUserId = req.user?.id || userId;
       const accountType = req.user?.type || req.body.userType || req.body.type;
 
-      const { currentPassword, newPassword } = req.body;
-
-      if (!userId || !currentPassword || !newPassword) {
+      if (!activeUserId || !currentPassword || !newPassword) {
         return res.status(400).json({
           success: false,
-          message: 'currentPassword and newPassword are required'
+          message: 'userId, currentPassword, and newPassword are required'
         });
       }
 
@@ -273,13 +271,30 @@ class AuthController {
       }
 
       let account = null;
-      const isLibrarian = (accountType === 'LIBRARIAN');
+      let isLibrarian = (accountType === 'LIBRARIAN');
 
-      // Strict account selection based on authenticated token payload
+      // 1. Target Librarian first if type specifies LIBRARIAN
       if (isLibrarian) {
-        account = await Librarian.findByIdWithPassword(userId);
+        account = await Librarian.findByIdWithPassword(activeUserId);
       } else {
-        account = await User.findByIdWithPassword(userId);
+        // 2. Otherwise try Student model
+        account = await User.findByIdWithPassword(activeUserId);
+
+        // 3. Fallback: Check Librarian table if not in users table or password validation fails
+        if (!account) {
+          const libCheck = await Librarian.findByIdWithPassword(activeUserId);
+          if (libCheck && verifyPassword(currentPassword, libCheck.password)) {
+            account = libCheck;
+            isLibrarian = true;
+          }
+        } else if (!verifyPassword(currentPassword, account.password)) {
+          // If Student password fails, check if ID corresponds to a Librarian account
+          const libCheck = await Librarian.findByIdWithPassword(activeUserId);
+          if (libCheck && verifyPassword(currentPassword, libCheck.password)) {
+            account = libCheck;
+            isLibrarian = true;
+          }
+        }
       }
 
       if (!account || account.is_active === 0 || account.is_active === false) {
@@ -289,7 +304,7 @@ class AuthController {
         });
       }
 
-      // Verify current password hash
+      // Verify current password match
       const isValid = verifyPassword(currentPassword, account.password);
       if (!isValid) {
         return res.status(401).json({
