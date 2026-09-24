@@ -3,6 +3,10 @@ const jwt = require('jsonwebtoken');
 // Unified secret fallback
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
+/**
+ * General Authentication Middleware
+ * Validates JWT token and attaches user payload to req.user
+ */
 const authMiddleware = (req, res, next) => {
   const authHeader = req.header('Authorization');
   const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : null;
@@ -16,7 +20,7 @@ const authMiddleware = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
+    req.user = decoded; // Contains id, email/username, type ('STUDENT' or 'LIBRARIAN')
     next();
   } catch (error) {
     return res.status(401).json({ 
@@ -26,6 +30,10 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
+/**
+ * Role-Specific Middleware for Librarians
+ * Ensures user is authenticated and possesses the 'LIBRARIAN' role type
+ */
 const librarianAuth = (req, res, next) => {
   authMiddleware(req, res, () => {
     if (req.user?.type !== 'LIBRARIAN') {
