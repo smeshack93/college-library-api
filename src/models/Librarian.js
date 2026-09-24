@@ -9,6 +9,34 @@ class Librarian {
         return rows[0];
     }
 
+    /**
+     * Dedicated lookup for librarian password verification procedures
+     */
+    static async findByIdWithPassword(id) {
+        const [rows] = await pool.execute(
+            'SELECT * FROM librarians WHERE id = ? AND is_active = 1',
+            [id]
+        );
+        return rows[0];
+    }
+
+    /**
+     * Updates librarian password and flags
+     */
+    static async updatePassword(librarianId, newPasswordHash) {
+        const [result] = await pool.execute(
+            `UPDATE librarians 
+             SET password = ?, 
+                 password_format = 'PBKDF2',
+                 password_migrated = 1,
+                 force_password_change = 0,
+                 password_updated_at = NOW() 
+             WHERE id = ?`,
+            [newPasswordHash, librarianId]
+        );
+        return result.affectedRows > 0;
+    }
+
     static async getDashboardStats() {
         const [rows] = await pool.execute(`
             SELECT 
