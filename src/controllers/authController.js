@@ -6,6 +6,11 @@ const { sendResetEmail } = require('../config/email');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 
 class AuthController {
+  
+  /**
+   * Student Login
+   * POST /api/auth/login
+   */
   static async login(req, res) {
     try {
       const { email, password } = req.body;
@@ -63,6 +68,10 @@ class AuthController {
     }
   }
 
+  /**
+   * Student Registration
+   * POST /api/auth/register
+   */
   static async register(req, res) {
     try {
       const { username, email, fullName, password, ntaLevel } = req.body;
@@ -132,6 +141,10 @@ class AuthController {
     }
   }
 
+  /**
+   * Request Forgot Password Email
+   * POST /api/auth/forgot-password
+   */
   static async forgotPassword(req, res) {
     try {
       const { email } = req.body;
@@ -181,6 +194,10 @@ class AuthController {
     }
   }
 
+  /**
+   * Reset Password via Token
+   * POST /api/auth/reset-password
+   */
   static async resetPassword(req, res) {
     try {
       const { token, newPassword } = req.body;
@@ -229,21 +246,22 @@ class AuthController {
   }
 
   /**
-   * Universal Change Password endpoint (Handles both Students & Librarians)
+   * Universal Change Password Endpoint (Handles both Students and Librarians safely)
    * POST /api/auth/change-password
-   * Body: { userId, currentPassword, newPassword, userType }
+   * Requires: authMiddleware
    */
   static async changePassword(req, res) {
     try {
-      const { userId, currentPassword, newPassword } = req.body;
-      
-      // Determine account type from token payload OR request body
-      const userType = req.user?.type || req.body.userType || req.body.type;
+      // Get user ID and account type directly from authenticated JWT payload
+      const userId = req.user?.id || req.body.userId;
+      const accountType = req.user?.type || req.body.userType || req.body.type;
+
+      const { currentPassword, newPassword } = req.body;
 
       if (!userId || !currentPassword || !newPassword) {
         return res.status(400).json({
           success: false,
-          message: 'userId, currentPassword and newPassword are required'
+          message: 'currentPassword and newPassword are required'
         });
       }
 
@@ -255,32 +273,23 @@ class AuthController {
       }
 
       let account = null;
-      let isLibrarian = (userType === 'LIBRARIAN');
+      const isLibrarian = (accountType === 'LIBRARIAN');
 
-      // Attempt to look up librarian first if userType explicitly indicates LIBRARIAN
+      // Strict account selection based on authenticated token payload
       if (isLibrarian) {
         account = await Librarian.findByIdWithPassword(userId);
       } else {
-        // Look up student user
         account = await User.findByIdWithPassword(userId);
-
-        // Fallback: If not found in users table, check librarians table automatically
-        if (!account) {
-          account = await Librarian.findByIdWithPassword(userId);
-          if (account) {
-            isLibrarian = true;
-          }
-        }
       }
 
       if (!account || account.is_active === 0 || account.is_active === false) {
         return res.status(404).json({
           success: false,
-          message: 'User not found'
+          message: 'Account not found or inactive'
         });
       }
 
-      // Verify current password against stored hash
+      // Verify current password hash
       const isValid = verifyPassword(currentPassword, account.password);
       if (!isValid) {
         return res.status(401).json({
@@ -289,7 +298,7 @@ class AuthController {
         });
       }
 
-      // Hash new password using standard PBKDF2
+      // Hash new password using PBKDF2
       const hashedPassword = hashPassword(newPassword);
 
       if (isLibrarian) {
