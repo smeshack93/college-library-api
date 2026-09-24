@@ -5,7 +5,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
 /**
  * General Authentication Middleware
- * Validates JWT token and attaches user payload to req.user
+ * Validates JWT token and attaches user payload to req.user if present
  */
 const authMiddleware = (req, res, next) => {
   const authHeader = req.header('Authorization');
@@ -31,6 +31,25 @@ const authMiddleware = (req, res, next) => {
 };
 
 /**
+ * Optional Authentication Middleware
+ * Attaches req.user if a valid token is sent, but allows request to continue if no token is provided
+ */
+const optionalAuthMiddleware = (req, res, next) => {
+  const authHeader = req.header('Authorization');
+  const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : null;
+
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      req.user = decoded;
+    } catch (error) {
+      // Token expired or invalid, continue without req.user
+    }
+  }
+  next();
+};
+
+/**
  * Role-Specific Middleware for Librarians
  * Ensures user is authenticated and possesses the 'LIBRARIAN' role type
  */
@@ -46,4 +65,4 @@ const librarianAuth = (req, res, next) => {
   });
 };
 
-module.exports = { authMiddleware, librarianAuth };
+module.exports = { authMiddleware, optionalAuthMiddleware, librarianAuth };
