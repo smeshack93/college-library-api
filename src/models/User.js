@@ -2,8 +2,6 @@ const crypto = require('crypto');
 const pool = require('../config/database');
 
 class User {
-  // --- Existing Unchanged Methods ---
-
   static async findByEmail(email) {
     const [rows] = await pool.execute(
       'SELECT * FROM users WHERE email = ? AND is_active = 1',
@@ -22,7 +20,7 @@ class User {
 
   /**
    * Dedicated lookup method for authentication procedures needing password verification.
-   * Uses SELECT * to fetch full user record and avoid undefined hash/metadata errors.
+   * Fetches active user record with hashed password field included.
    */
   static async findByIdWithPassword(id) {
     const [rows] = await pool.execute(
@@ -50,20 +48,15 @@ class User {
        SET password = ?, 
            password_updated_at = NOW(), 
            reset_token = NULL, 
-           reset_token_expires = NULL 
+           reset_token_expires = NULL,
+           force_password_change = 0 
        WHERE id = ?`,
       [newPasswordHash, userId]
     );
     return result.affectedRows > 0;
   }
 
-  // --- Reset Token Methods ---
-
-  /**
-   * Hashes the raw token and saves it alongside the expiration date.
-   */
   static async setResetToken(email, token, expiresAt) {
-    // Hash token using SHA-256 for secure storage
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
     const formattedExpiresAt = new Date(expiresAt).toISOString().slice(0, 19).replace('T', ' ');
 
@@ -76,9 +69,6 @@ class User {
     return result.affectedRows > 0;
   }
 
-  /**
-   * Hashes incoming plain token and queries DB for active match.
-   */
   static async findByResetToken(token) {
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
 
@@ -90,9 +80,6 @@ class User {
     return rows[0];
   }
 
-  /**
-   * Clears the reset token and expiration fields for a user.
-   */
   static async clearResetToken(userId) {
     const [result] = await pool.execute(
       `UPDATE users 
