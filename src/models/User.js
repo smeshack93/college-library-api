@@ -20,6 +20,18 @@ class User {
     return rows[0];
   }
 
+  /**
+   * Dedicated lookup method for authentication procedures needing password verification.
+   * Fetches active user record with hashed password field included.
+   */
+  static async findByIdWithPassword(id) {
+    const [rows] = await pool.execute(
+      'SELECT id, password FROM users WHERE id = ? AND is_active = 1',
+      [id]
+    );
+    return rows[0];
+  }
+
   static async create(userData) {
     const { username, email, fullName, password, ntaLevel } = userData;
     
