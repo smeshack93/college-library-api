@@ -10,7 +10,7 @@ class Librarian {
     }
 
     /**
-     * Dedicated lookup for librarian password verification procedures
+     * Dedicated lookup for librarian password verification
      */
     static async findByIdWithPassword(id) {
         const [rows] = await pool.execute(
@@ -21,7 +21,7 @@ class Librarian {
     }
 
     /**
-     * Updates librarian password and flags
+     * Updates librarian password and related security flags
      */
     static async updatePassword(librarianId, newPasswordHash) {
         const [result] = await pool.execute(
