@@ -50,4 +50,12 @@ router.post('/reset-password', [
   validateRequest
 ], AuthController.resetPassword);
 
+// Change password (student or librarian)
+router.post('/change-password', [
+  body('userId').isInt({ min: 1 }).withMessage('Valid userId is required'),
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+  body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+  validateRequest
+], AuthController.changePassword);
+
 module.exports = router;
