@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { pool } = require('../config/db');
 const { sendResetEmail } = require('../config/email');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 
@@ -242,6 +243,73 @@ class AuthController {
       res.status(500).json({ 
         success: false, 
         message: 'Server error' 
+      });
+    }
+  }
+
+  /**
+   * Change password for the logged-in user.
+   * POST /api/auth/change-password
+   * Body: { userId, currentPassword, newPassword }
+   * Works for both students and librarians (same `users` table).
+   */
+  static async changePassword(req, res) {
+    try {
+      const { userId, currentPassword, newPassword } = req.body;
+
+      if (!userId || !currentPassword || !newPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'userId, currentPassword and newPassword are required'
+        });
+      }
+
+      if (String(newPassword).length < 6) {
+        return res.status(400).json({
+          success: false,
+          message: 'New password must be at least 6 characters'
+        });
+      }
+
+      // Look up the user
+      const [rows] = await pool.execute(
+        'SELECT id, password FROM users WHERE id = ? AND is_active = 1',
+        [userId]
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      const user = rows[0];
+
+      // Verify current password
+      const isValid = verifyPassword(currentPassword, user.password);
+      if (!isValid) {
+        return res.status(401).json({
+          success: false,
+          message: 'Current password is incorrect'
+        });
+      }
+
+      // Hash and store the new password
+      const hashedPassword = hashPassword(newPassword);
+      await User.updatePassword(user.id, hashedPassword);
+
+      console.log(`✅ Password changed for user id: ${user.id}`);
+
+      return res.json({
+        success: true,
+        message: 'Password changed successfully'
+      });
+    } catch (error) {
+      console.error('Change password error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Server error'
       });
     }
   }
