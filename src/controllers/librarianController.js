@@ -1,4 +1,3 @@
-// controllers/librarianController.js
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
@@ -13,8 +12,15 @@ class LibrarianController {
         try {
             const { username, password } = req.body;
             
+            if (!username || !password) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Username and password are required'
+                });
+            }
+
             const [librarians] = await pool.execute(
-                'SELECT * FROM librarians WHERE username = ? AND is_active = TRUE',
+                'SELECT * FROM librarians WHERE username = ? AND is_active = 1',
                 [username]
             );
             
@@ -61,7 +67,7 @@ class LibrarianController {
             console.error('Librarian login error:', error);
             res.status(500).json({ 
                 success: false, 
-                message: 'Server error: ' + error.message 
+                message: 'Server error' 
             });
         }
     }
@@ -84,7 +90,7 @@ class LibrarianController {
             const [librarians] = await pool.execute(
                 `SELECT id, employee_id, full_name, email 
                  FROM librarians 
-                 WHERE employee_id = ? AND is_active = TRUE`,
+                 WHERE employee_id = ? AND is_active = 1`,
                 [employeeId]
             );
             
@@ -97,8 +103,8 @@ class LibrarianController {
             
             const librarian = librarians[0];
             
-            if (librarian.full_name.toLowerCase() !== fullName.toLowerCase() ||
-                librarian.email.toLowerCase() !== email.toLowerCase()) {
+            if (librarian.full_name.toLowerCase() !== fullName.trim().toLowerCase() ||
+                librarian.email.toLowerCase() !== email.trim().toLowerCase()) {
                 return res.status(401).json({ 
                     success: false, 
                     message: 'Information does not match our records' 
@@ -113,7 +119,7 @@ class LibrarianController {
             console.error('Verify identity error:', error);
             res.status(500).json({ 
                 success: false, 
-                message: 'Server error: ' + error.message 
+                message: 'Server error' 
             });
         }
     }
@@ -149,7 +155,7 @@ class LibrarianController {
                      password_migrated = 1,
                      force_password_change = 0,
                      password_updated_at = NOW()
-                 WHERE employee_id = ? AND is_active = TRUE`,
+                 WHERE employee_id = ? AND is_active = 1`,
                 [hashedPassword, employeeId]
             );
             
@@ -168,7 +174,7 @@ class LibrarianController {
             console.error('Reset password error:', error);
             res.status(500).json({ 
                 success: false, 
-                message: 'Server error: ' + error.message 
+                message: 'Server error' 
             });
         }
     }
@@ -197,7 +203,7 @@ class LibrarianController {
             console.error('Get statistics error:', error);
             res.status(500).json({ 
                 success: false, 
-                message: error.message 
+                message: 'Failed to retrieve statistics' 
             });
         }
     }
@@ -237,7 +243,6 @@ class LibrarianController {
                     br.request_date DESC
             `);
             
-            // Format object keys matching exact SQL aliases
             const formattedRequests = requests.map(req => ({
                 id: req.id,
                 userName: req.userName,
@@ -261,7 +266,7 @@ class LibrarianController {
             console.error('Get pending requests error:', error);
             res.status(500).json({ 
                 success: false, 
-                message: error.message 
+                message: 'Failed to fetch pending requests' 
             });
         }
     }
@@ -277,16 +282,14 @@ class LibrarianController {
             const { id } = req.params;
             const librarianId = req.user.id;
             
-            console.log(`📌 Approving request ID: ${id} by librarian: ${librarianId}`);
-            
             await connection.beginTransaction();
             
-            // Get the request details with book info
             const [requests] = await connection.execute(
                 `SELECT br.*, b.title, b.available_quantity, b.quantity 
                  FROM book_requests br
                  JOIN books b ON br.book_id = b.id
-                 WHERE br.id = ? AND br.status = 'PENDING'`,
+                 WHERE br.id = ? AND br.status = 'PENDING'
+                 FOR UPDATE`,
                 [id]
             );
             
@@ -299,12 +302,8 @@ class LibrarianController {
             }
             
             const request = requests[0];
-            console.log(`📌 Request Type: ${request.request_type}`);
-            console.log(`📌 Current available_quantity: ${request.available_quantity}`);
             
-            // Update request status based on type
             if (request.request_type === 'RETURN') {
-                // For RETURN: set return_date and update related borrow request
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'APPROVED', 
@@ -314,9 +313,7 @@ class LibrarianController {
                      WHERE id = ?`,
                     [librarianId, id]
                 );
-                console.log(`✅ RETURN request updated with return_date`);
                 
-                // IMPORTANT: Update the original borrow request to COMPLETED
                 if (request.related_request_id) {
                     await connection.execute(
                         `UPDATE book_requests 
@@ -324,10 +321,7 @@ class LibrarianController {
                          WHERE id = ?`,
                         [request.related_request_id]
                     );
-                    console.log(`✅ Original borrow request ${request.related_request_id} marked as COMPLETED`);
                 } else {
-                    // If no related_request_id, try to find the original borrow request
-                    // for this book and user that is APPROVED
                     const [borrowRequests] = await connection.execute(
                         `SELECT id FROM book_requests 
                          WHERE user_id = ? AND book_id = ? 
@@ -343,46 +337,9 @@ class LibrarianController {
                              WHERE id = ?`,
                             [borrowRequests[0].id]
                         );
-                        console.log(`✅ Found and marked borrow request ${borrowRequests[0].id} as COMPLETED`);
                     }
                 }
                 
-            } else {
-                // For BORROW: set approval_date and calculate due dates
-                await connection.execute(
-                    `UPDATE book_requests 
-                     SET status = 'APPROVED', 
-                         approved_by = ?,
-                         approval_date = NOW(),
-                         borrow_date = NOW(),
-                         due_date = DATE_ADD(NOW(), INTERVAL 14 DAY)
-                     WHERE id = ?`,
-                    [librarianId, id]
-                );
-                console.log(`✅ BORROW request updated with approval_date and 14-day due_date`);
-            }
-            
-            // Handle quantity changes
-            if (request.request_type === 'BORROW') {
-                // Decrease available quantity for borrow
-                const [updateResult] = await connection.execute(
-                    `UPDATE books 
-                     SET available_quantity = available_quantity - 1 
-                     WHERE id = ? AND available_quantity > 0`,
-                    [request.book_id]
-                );
-                
-                if (updateResult.affectedRows === 0) {
-                    await connection.rollback();
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Book is no longer available'
-                    });
-                }
-                console.log(`✅ Borrow approved - quantity decreased by 1`);
-                
-            } else if (request.request_type === 'RETURN') {
-                // Increase available quantity for return
                 const [updateResult] = await connection.execute(
                     `UPDATE books 
                      SET available_quantity = available_quantity + 1 
@@ -397,19 +354,42 @@ class LibrarianController {
                         message: 'Failed to update book quantity'
                     });
                 }
-                console.log(`✅ Return approved - quantity increased by 1`);
+                
+            } else {
+                await connection.execute(
+                    `UPDATE book_requests 
+                     SET status = 'APPROVED', 
+                         approved_by = ?,
+                         approval_date = NOW(),
+                         borrow_date = NOW(),
+                         due_date = DATE_ADD(NOW(), INTERVAL 14 DAY)
+                     WHERE id = ?`,
+                    [librarianId, id]
+                );
+
+                const [updateResult] = await connection.execute(
+                    `UPDATE books 
+                     SET available_quantity = available_quantity - 1 
+                     WHERE id = ? AND available_quantity > 0`,
+                    [request.book_id]
+                );
+                
+                if (updateResult.affectedRows === 0) {
+                    await connection.rollback();
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Book is no longer available'
+                    });
+                }
             }
             
             await connection.commit();
             
-            // Get updated book info
-            const [updatedBooks] = await connection.execute(
+            const [updatedBooks] = await pool.execute(
                 'SELECT available_quantity FROM books WHERE id = ?',
                 [request.book_id]
             );
             const newQuantity = updatedBooks.length > 0 ? updatedBooks[0].available_quantity : 'unknown';
-            
-            console.log(`✅ Request ${id} approved successfully. New quantity: ${newQuantity}`);
             
             res.json({ 
                 success: true, 
@@ -423,10 +403,10 @@ class LibrarianController {
             
         } catch (error) {
             await connection.rollback();
-            console.error('❌ Approve request error:', error);
+            console.error('Approve request error:', error);
             res.status(500).json({ 
                 success: false, 
-                message: 'Failed to approve request: ' + error.message 
+                message: 'Failed to approve request' 
             });
         } finally {
             connection.release();
@@ -448,7 +428,7 @@ class LibrarianController {
             await connection.beginTransaction();
             
             const [requests] = await connection.execute(
-                `SELECT * FROM book_requests WHERE id = ? AND status = 'PENDING'`,
+                `SELECT * FROM book_requests WHERE id = ? AND status = 'PENDING' FOR UPDATE`,
                 [id]
             );
             
@@ -482,7 +462,7 @@ class LibrarianController {
             console.error('Reject request error:', error);
             res.status(500).json({ 
                 success: false, 
-                message: error.message 
+                message: 'Failed to reject request' 
             });
         } finally {
             connection.release();
@@ -497,7 +477,6 @@ class LibrarianController {
         try {
             const { status, requestType, search } = req.query;
 
-            // Ensure pagination values are positive integers
             const limit = Math.max(1, parseInt(req.query.limit, 10) || 100);
             const page = Math.max(1, parseInt(req.query.page, 10) || 1);
             const offset = (page - 1) * limit;
@@ -552,10 +531,9 @@ class LibrarianController {
                 params.push(searchPattern, searchPattern, searchPattern);
             }
 
-            // Interpolate sanitized integers directly into the query to prevent prepared statement binding issues
-            query += ` ORDER BY COALESCE(br.approval_date, br.request_date) DESC LIMIT ${limit} OFFSET ${offset}`;
+            query += ` ORDER BY COALESCE(br.approval_date, br.request_date) DESC LIMIT ? OFFSET ?`;
+            params.push(limit, offset);
 
-            // Use pool.query instead of pool.execute
             const [rows] = await pool.query(query, params);
 
             const formattedHistory = rows.map(row => ({
@@ -595,7 +573,7 @@ class LibrarianController {
             console.error('Get request history error:', error);
             res.status(500).json({
                 success: false,
-                message: 'Failed to fetch request history: ' + error.message
+                message: 'Failed to fetch request history'
             });
         }
     }
@@ -624,7 +602,6 @@ class LibrarianController {
                 });
             }
 
-            // Verify the request exists, is in a historical state, and fetch existing remark
             const [requests] = await pool.execute(
                 `SELECT id, status, remark FROM book_requests 
                  WHERE id = ? AND status IN ('APPROVED', 'REJECTED', 'COMPLETED', 'RETURNED')`,
@@ -638,7 +615,6 @@ class LibrarianController {
                 });
             }
 
-            // Block modification if a remark already exists
             if (requests[0].remark && requests[0].remark.trim() !== '') {
                 return res.status(409).json({
                     success: false,
@@ -655,7 +631,6 @@ class LibrarianController {
                 [remark.trim(), librarianId, id]
             );
 
-            // Fetch the updated record with librarian name
             const [updated] = await pool.execute(
                 `SELECT br.remark, br.remark_date, l.full_name as remarkByName
                  FROM book_requests br
@@ -668,7 +643,7 @@ class LibrarianController {
                 success: true,
                 message: 'Remark added successfully',
                 data: {
-                    requestId: parseInt(id),
+                    requestId: parseInt(id, 10),
                     remark: updated[0].remark,
                     remarkByName: updated[0].remarkByName || '',
                     remarkDate: updated[0].remark_date
@@ -679,7 +654,7 @@ class LibrarianController {
             console.error('Add remark error:', error);
             res.status(500).json({
                 success: false,
-                message: 'Failed to add remark: ' + error.message
+                message: 'Failed to add remark'
             });
         }
     }
