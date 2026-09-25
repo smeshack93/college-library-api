@@ -25,7 +25,7 @@ const authMiddleware = (req, res, next) => {
   } catch (error) {
     return res.status(401).json({ 
       success: false, 
-      message: 'Token is not valid' 
+      message: 'Token is not valid or has expired' 
     });
   }
 };
@@ -44,6 +44,7 @@ const optionalAuthMiddleware = (req, res, next) => {
       req.user = decoded;
     } catch (error) {
       // Token expired or invalid, continue without req.user
+      req.user = null;
     }
   }
   next();
