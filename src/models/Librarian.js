@@ -6,7 +6,7 @@ class Librarian {
             'SELECT * FROM librarians WHERE username = ? AND is_active = 1',
             [username]
         );
-        return rows[0];
+        return rows[0] || null;
     }
 
     /**
@@ -17,7 +17,7 @@ class Librarian {
             'SELECT * FROM librarians WHERE id = ? AND is_active = 1',
             [id]
         );
-        return rows[0];
+        return rows[0] || null;
     }
 
     /**
