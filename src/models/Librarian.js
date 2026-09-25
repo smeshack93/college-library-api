@@ -29,8 +29,7 @@ class Librarian {
              SET password = ?, 
                  password_format = 'PBKDF2',
                  password_migrated = 1,
-                 force_password_change = 0,
-                 password_updated_at = NOW() 
+                 force_password_change = 0
              WHERE id = ?`,
             [newPasswordHash, librarianId]
         );
