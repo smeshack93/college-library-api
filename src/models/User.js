@@ -7,15 +7,15 @@ class User {
       'SELECT * FROM users WHERE email = ? AND is_active = 1',
       [email]
     );
-    return rows[0];
+    return rows[0] || null;
   }
 
   static async findById(id) {
     const [rows] = await pool.execute(
-      'SELECT id, username, email, full_name, nta_level FROM users WHERE id = ?',
+      'SELECT id, username, email, full_name, nta_level FROM users WHERE id = ? AND is_active = 1',
       [id]
     );
-    return rows[0];
+    return rows[0] || null;
   }
 
   /**
@@ -27,7 +27,7 @@ class User {
       'SELECT * FROM users WHERE id = ? AND is_active = 1',
       [id]
     );
-    return rows[0];
+    return rows[0] || null;
   }
 
   static async create(userData) {
@@ -77,7 +77,7 @@ class User {
        WHERE reset_token = ? AND reset_token_expires > NOW() AND is_active = 1`,
       [hashedToken]
     );
-    return rows[0];
+    return rows[0] || null;
   }
 
   static async clearResetToken(userId) {
