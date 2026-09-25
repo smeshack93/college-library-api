@@ -34,7 +34,6 @@ class AuthController {
       const isValid = verifyPassword(password, user.password);
       
       if (!isValid) {
-        console.log(`❌ Auth failed for user: ${email}`);
         return res.status(401).json({ 
           success: false, 
           message: 'Invalid credentials' 
@@ -116,8 +115,6 @@ class AuthController {
         ntaLevel
       });
 
-      console.log(`✅ User registered: ${username} (ID: ${userId})`);
-
       res.status(201).json({ 
         success: true, 
         message: 'User registered successfully',
@@ -136,7 +133,7 @@ class AuthController {
       
       res.status(500).json({ 
         success: false, 
-        message: error.message || 'Registration failed' 
+        message: 'Registration failed' 
       });
     }
   }
@@ -175,7 +172,6 @@ class AuthController {
 
       try {
         await sendResetEmail(email, resetLink, user.full_name);
-        console.log(`📧 Reset email sent to: ${email}`);
       } catch (mailErr) {
         console.error('Email send failed:', mailErr);
       }
@@ -229,8 +225,6 @@ class AuthController {
       await User.updatePassword(user.id, hashedPassword);
       await User.clearResetToken(user.id);
 
-      console.log(`✅ Password reset for user: ${user.email}`);
-
       res.json({ 
         success: true, 
         message: 'Password reset successfully. You can now login.' 
@@ -273,14 +267,11 @@ class AuthController {
       let account = null;
       let isLibrarian = (accountType === 'LIBRARIAN');
 
-      // 1. Target Librarian first if type specifies LIBRARIAN
       if (isLibrarian) {
         account = await Librarian.findByIdWithPassword(activeUserId);
       } else {
-        // 2. Otherwise try Student model
         account = await User.findByIdWithPassword(activeUserId);
 
-        // 3. Fallback: Check Librarian table if not in users table or password validation fails
         if (!account) {
           const libCheck = await Librarian.findByIdWithPassword(activeUserId);
           if (libCheck && verifyPassword(currentPassword, libCheck.password)) {
@@ -288,7 +279,6 @@ class AuthController {
             isLibrarian = true;
           }
         } else if (!verifyPassword(currentPassword, account.password)) {
-          // If Student password fails, check if ID corresponds to a Librarian account
           const libCheck = await Librarian.findByIdWithPassword(activeUserId);
           if (libCheck && verifyPassword(currentPassword, libCheck.password)) {
             account = libCheck;
@@ -304,7 +294,6 @@ class AuthController {
         });
       }
 
-      // Verify current password match
       const isValid = verifyPassword(currentPassword, account.password);
       if (!isValid) {
         return res.status(401).json({
@@ -313,15 +302,12 @@ class AuthController {
         });
       }
 
-      // Hash new password using PBKDF2
       const hashedPassword = hashPassword(newPassword);
 
       if (isLibrarian) {
         await Librarian.updatePassword(account.id, hashedPassword);
-        console.log(`✅ Password changed for Librarian ID: ${account.id}`);
       } else {
         await User.updatePassword(account.id, hashedPassword);
-        console.log(`✅ Password changed for Student ID: ${account.id}`);
       }
 
       return res.json({
