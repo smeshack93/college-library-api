@@ -1,4 +1,3 @@
-// routes/librarian.js
 const express = require('express');
 const router = express.Router();
 const LibrarianController = require('../controllers/librarianController');
