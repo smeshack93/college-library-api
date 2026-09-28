@@ -1,79 +1,74 @@
 const express = require('express');
 const router = express.Router();
 const LibrarianController = require('../controllers/librarianController');
-const { librarianAuth } = require('../middleware/auth');
-
-/* ==========================================================================
-   Authentication & Password Recovery Routes (Public)
-   ========================================================================== */
+const librarianAuth = require('../middleware/librarianAuth');
 
 /**
  * @route   POST /api/librarian/login
- * @desc    Librarian login & get token
+ * @desc    Authenticate librarian & return JWT token
  * @access  Public
  */
 router.post('/login', LibrarianController.login);
 
 /**
+ * @route   GET /api/librarian/profile
+ * @desc    Get current logged in librarian profile info
+ * @access  Private (Librarian only)
+ */
+router.get('/profile', librarianAuth, LibrarianController.getProfile);
+
+/**
  * @route   POST /api/librarian/verify-identity
- * @desc    Verify librarian identity for password reset
+ * @desc    Verify librarian credentials for password recovery
  * @access  Public
  */
 router.post('/verify-identity', LibrarianController.verifyIdentity);
 
 /**
  * @route   POST /api/librarian/reset-password
- * @desc    Reset librarian password after verification
+ * @desc    Reset librarian password
  * @access  Public
  */
 router.post('/reset-password', LibrarianController.resetPassword);
 
-/* ==========================================================================
-   Dashboard & Statistics Routes (Protected)
-   ========================================================================== */
-
-/**
- * @route   GET /api/librarian/statistics
- * @desc    Get dashboard counts (Users, Books, Requests)
- * @access  Private (Librarian only)
- */
-router.get('/statistics', librarianAuth, LibrarianController.getStatistics);
-
-/* ==========================================================================
-   Book Request Management Routes (Protected)
-   ========================================================================== */
-
 /**
  * @route   GET /api/librarian/requests/pending
- * @desc    Get list of all pending book requests
+ * @desc    Get all pending borrow/return requests
  * @access  Private (Librarian only)
  */
 router.get('/requests/pending', librarianAuth, LibrarianController.getPendingRequests);
 
 /**
- * @route   GET /api/librarian/requests/history
- * @desc    Get history of processed requests (approved/rejected/completed/returned)
- * @access  Private (Librarian only)
- */
-router.get('/requests/history', librarianAuth, LibrarianController.getRequestHistory);
-
-/**
  * @route   POST /api/librarian/requests/:id/approve
- * @desc    Approve a specific book request
+ * @desc    Approve a pending request
  * @access  Private (Librarian only)
  */
 router.post('/requests/:id/approve', librarianAuth, LibrarianController.approveRequest);
 
 /**
  * @route   POST /api/librarian/requests/:id/reject
- * @desc    Reject a specific book request with notes
+ * @desc    Reject a pending request with reason
  * @access  Private (Librarian only)
  */
 router.post('/requests/:id/reject', librarianAuth, LibrarianController.rejectRequest);
 
 /**
+ * @route   GET /api/librarian/statistics
+ * @desc    Get library overview statistics
+ * @access  Private (Librarian only)
+ */
+router.get('/statistics', librarianAuth, LibrarianController.getStatistics);
+
+/**
+ * @route   GET /api/librarian/requests/history
+ * @desc    Get processed request history
+ * @access  Private (Librarian only)
+ */
+router.get('/requests/history', librarianAuth, LibrarianController.getRequestHistory);
+
+/**
  * @route   POST /api/librarian/requests/:id/remark
- * @desc    Add or update a remark on a historical request
+ * @desc    Add remark to request
  * @access  Private (Librarian only)
  */
 router.post('/requests/:id/remark', librarianAuth, LibrarianController.addRequestRemark);
