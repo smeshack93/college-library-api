@@ -60,6 +60,7 @@ class LibrarianController {
                     fullName: librarian.full_name,
                     employeeId: librarian.employee_id,
                     email: librarian.email,
+                    phone: librarian.phone || librarian.phone_number || "N/A",
                     forcePasswordChange: librarian.force_password_change === 1
                 } 
             });
