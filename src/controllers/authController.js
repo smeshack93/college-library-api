@@ -54,7 +54,9 @@ class AuthController {
           username: user.username, 
           email: user.email,
           full_name: user.full_name,
-          nta_level: user.nta_level
+          nta_level: user.nta_level,
+          phone: user.phone || null,
+          college: user.college || null
         }
       });
       
@@ -73,27 +75,34 @@ class AuthController {
    */
   static async register(req, res) {
     try {
-      const { username, email, fullName, password, ntaLevel } = req.body;
+      const { username, email, fullName, password, ntaLevel, level, phone, college } = req.body;
 
-      if (!username || !email || !fullName || !password || !ntaLevel) {
+      const userNtaLevel = ntaLevel || level;
+
+      if (!username || !email || !fullName || !password || !userNtaLevel) {
         return res.status(400).json({ 
           success: false, 
-          message: 'All fields are required' 
+          message: 'All required fields must be filled' 
         });
       }
 
-      const allowedLevels = ['NTA Level 4', 'NTA Level 5', 'NTA Level 6', 'NVA', 'Secretarial'];
-      if (!allowedLevels.includes(ntaLevel)) {
+      // Updated to include levels present in Android RegisterActivity
+      const allowedLevels = [
+        'NTA Level 4', 'NTA Level 5', 'NTA Level 6', 
+        'NVA', 'Secretarial', 'Degree', 'Masters', 'PhD', 'Others'
+      ];
+      
+      if (!allowedLevels.includes(userNtaLevel)) {
         return res.status(400).json({ 
           success: false, 
-          message: 'Invalid NTA Level' 
+          message: 'Invalid Education Level' 
         });
       }
 
-      if (password.length < 8) {
+      if (password.length < 6) {
         return res.status(400).json({ 
           success: false, 
-          message: 'Password must be at least 8 characters' 
+          message: 'Password must be at least 6 characters' 
         });
       }
 
@@ -112,7 +121,9 @@ class AuthController {
         email,
         fullName,
         password: hashedPassword,
-        ntaLevel
+        ntaLevel: userNtaLevel,
+        phone,
+        college
       });
 
       res.status(201).json({ 
@@ -205,10 +216,10 @@ class AuthController {
         });
       }
 
-      if (newPassword.length < 8) {
+      if (newPassword.length < 6) {
         return res.status(400).json({ 
           success: false, 
-          message: 'Password must be at least 8 characters' 
+          message: 'Password must be at least 6 characters' 
         });
       }
 
