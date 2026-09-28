@@ -12,7 +12,7 @@ class User {
 
   static async findById(id) {
     const [rows] = await pool.execute(
-      'SELECT id, username, email, full_name, nta_level, phone, college FROM users WHERE id = ? AND is_active = 1',
+      'SELECT id, username, email, full_name, level, nta_level, phone, college FROM users WHERE id = ? AND is_active = 1',
       [id]
     );
     return rows[0] || null;
@@ -30,20 +30,20 @@ class User {
     return rows[0] || null;
   }
 
-  static async create(userData) {
-    const { username, email, fullName, password, ntaLevel, phone, college } = userData;
-    
-    // Safely handles optional phone and college fields without breaking existing schema calls
+  static async create({ username, email, fullName, password, level, ntaLevel, phone, college }) {
+    // Fallback if caller passed ntaLevel instead of level
+    const userLevel = level || ntaLevel || '';
+
     const [result] = await pool.execute(
       `INSERT INTO users 
-       (username, email, full_name, password, nta_level, phone, college, password_format, password_migrated, is_active) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'PBKDF2', 1, 1)`,
-      [username, email, fullName, password, ntaLevel, phone || null, college || null]
+       (username, email, full_name, password, level, nta_level, phone, college, password_format, password_migrated, is_active) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PBKDF2', 1, 1)`,
+      [username, email, fullName, password, userLevel, userLevel, phone || null, college || null]
     );
     return result.insertId;
   }
 
-  static async updatePassword(userId, newPasswordHash) {
+  static async updatePassword(userId, hashedPassword) {
     const [result] = await pool.execute(
       `UPDATE users 
        SET password = ?, 
@@ -52,7 +52,7 @@ class User {
            reset_token_expires = NULL,
            force_password_change = 0 
        WHERE id = ?`,
-      [newPasswordHash, userId]
+      [hashedPassword, userId]
     );
     return result.affectedRows > 0;
   }
