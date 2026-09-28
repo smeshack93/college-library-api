@@ -28,13 +28,16 @@ router.post('/login', [
   validateRequest
 ], AuthController.login);
 
-// Register
+// Register (Support both legacy web fields and Android client fields)
 router.post('/register', [
   body('username').notEmpty().withMessage('Username is required').trim(),
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('fullName').notEmpty().withMessage('Full name is required').trim(),
-  body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
-  body('ntaLevel').notEmpty().withMessage('NTA Level is required'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('ntaLevel').optional().trim(),
+  body('level').optional().trim(),
+  body('phone').optional().trim(),
+  body('college').optional().trim(),
   validateRequest
 ], AuthController.register);
 
@@ -47,7 +50,7 @@ router.post('/forgot-password', [
 // Reset password — submit new password with token
 router.post('/reset-password', [
   body('token').notEmpty().withMessage('Reset token is required'),
-  body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
+  body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
   validateRequest
 ], AuthController.resetPassword);
 
