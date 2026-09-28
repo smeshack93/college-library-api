@@ -222,52 +222,48 @@ class LibrarianController {
                     br.book_id,
                     br.request_date,
                     br.status,
-                    br.request_type,
+                    COALESCE(br.request_type, 'BORROW') AS request_type,
                     br.notes,
-                    u.full_name as userName,
-                    u.username as userUsername,
-                    u.nta_level as userNtaLevel,
-                    b.title as bookTitle,
-                    b.author as bookAuthor,
-                    b.isbn as bookIsbn,
-                    b.available_quantity as availableQuantity
+                    u.full_name AS userName,
+                    u.username  AS userUsername,
+                    u.nta_level AS userNtaLevel,
+                    b.title     AS bookTitle,
+                    b.author    AS bookAuthor,
+                    b.isbn      AS bookIsbn,
+                    b.available_quantity AS availableQuantity
                 FROM book_requests br
                 JOIN users u ON br.user_id = u.id
                 JOIN books b ON br.book_id = b.id
                 WHERE br.status = 'PENDING'
                 ORDER BY 
-                    CASE br.request_type 
+                    CASE COALESCE(br.request_type, 'BORROW')
                         WHEN 'RETURN' THEN 1 
                         WHEN 'BORROW' THEN 2 
                         ELSE 3 
                     END,
                     br.request_date DESC
             `);
-            
-            const formattedRequests = requests.map(req => ({
-                id: req.id,
-                userName: req.userName,
-                userUsername: req.userUsername,
-                userNtaLevel: req.userNtaLevel,
-                bookTitle: req.bookTitle,
-                bookAuthor: req.bookAuthor,
-                bookIsbn: req.bookIsbn,
-                requestDate: req.request_date,
-                requestType: req.request_type || 'BORROW',
-                status: req.status,
-                notes: req.notes,
-                availableQuantity: req.availableQuantity
+            const formattedRequests = requests.map(r => ({
+                id: r.id,
+                userName: r.userName,
+                userUsername: r.userUsername,
+                userNtaLevel: r.userNtaLevel,
+                bookTitle: r.bookTitle,
+                bookAuthor: r.bookAuthor,
+                bookIsbn: r.bookIsbn,
+                requestDate: r.request_date,
+                requestType: r.request_type || 'BORROW',
+                status: r.status,
+                notes: r.notes || '',
+                availableQuantity: r.availableQuantity
             }));
-            
-            res.json({ 
-                success: true, 
-                data: formattedRequests 
-            });
+            res.json({ success: true, data: formattedRequests });
         } catch (error) {
             console.error('Get pending requests error:', error);
-            res.status(500).json({ 
-                success: false, 
-                message: 'Failed to fetch pending requests' 
+            res.status(500).json({
+                success: false,
+                message: 'Failed to fetch pending requests',
+                error: error.message
             });
         }
     }
@@ -477,9 +473,8 @@ class LibrarianController {
     static async getRequestHistory(req, res) {
         try {
             const { status, requestType, search } = req.query;
-
             const limit = Math.max(1, parseInt(req.query.limit, 10) || 100);
-            const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+            const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
             const offset = (page - 1) * limit;
 
             let query = `
@@ -489,7 +484,7 @@ class LibrarianController {
                     br.book_id,
                     br.request_date,
                     br.status,
-                    br.request_type,
+                    COALESCE(br.request_type, 'BORROW') AS request_type,
                     br.approval_date,
                     br.borrow_date,
                     br.due_date,
@@ -498,19 +493,19 @@ class LibrarianController {
                     br.remark,
                     br.remark_by,
                     br.remark_date,
-                    u.full_name as userName,
-                    u.username as userUsername,
-                    u.nta_level as userNtaLevel,
-                    b.title as bookTitle,
-                    b.author as bookAuthor,
-                    b.isbn as bookIsbn,
-                    l.full_name as librarianName,
-                    rl.full_name as remarkByName
+                    u.full_name AS userName,
+                    u.username  AS userUsername,
+                    u.nta_level AS userNtaLevel,
+                    b.title     AS bookTitle,
+                    b.author    AS bookAuthor,
+                    b.isbn      AS bookIsbn,
+                    l.full_name  AS librarianName,
+                    rl.full_name AS remarkByName
                 FROM book_requests br
                 JOIN users u ON br.user_id = u.id
                 JOIN books b ON br.book_id = b.id
-                LEFT JOIN librarians l ON br.approved_by = l.id
-                LEFT JOIN librarians rl ON br.remark_by = rl.id
+                LEFT JOIN librarians l  ON br.approved_by = l.id
+                LEFT JOIN librarians rl ON br.remark_by   = rl.id
                 WHERE br.status IN ('APPROVED', 'REJECTED', 'COMPLETED', 'RETURNED')
             `;
 
@@ -522,14 +517,14 @@ class LibrarianController {
             }
 
             if (requestType && requestType !== 'ALL') {
-                query += ` AND br.request_type = ?`;
+                query += ` AND COALESCE(br.request_type, 'BORROW') = ?`;
                 params.push(requestType);
             }
 
             if (search && search.trim() !== '') {
                 query += ` AND (u.full_name LIKE ? OR b.title LIKE ? OR u.username LIKE ?)`;
-                const searchPattern = `%${search.trim()}%`;
-                params.push(searchPattern, searchPattern, searchPattern);
+                const s = `%${search.trim()}%`;
+                params.push(s, s, s);
             }
 
             query += ` ORDER BY COALESCE(br.approval_date, br.request_date) DESC LIMIT ? OFFSET ?`;
@@ -574,7 +569,8 @@ class LibrarianController {
             console.error('Get request history error:', error);
             res.status(500).json({
                 success: false,
-                message: 'Failed to fetch request history'
+                message: 'Failed to fetch request history',
+                error: error.message
             });
         }
     }
