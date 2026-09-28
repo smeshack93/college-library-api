@@ -10,6 +10,17 @@ class Librarian {
     }
 
     /**
+     * Dedicated lookup for librarian details including phone
+     */
+    static async findById(id) {
+        const [rows] = await pool.execute(
+            'SELECT id, username, email, full_name, employee_id, phone FROM librarians WHERE id = ? AND is_active = 1',
+            [id]
+        );
+        return rows[0] || null;
+    }
+
+    /**
      * Dedicated lookup for librarian password verification
      */
     static async findByIdWithPassword(id) {
