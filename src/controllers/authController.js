@@ -54,7 +54,8 @@ class AuthController {
           username: user.username, 
           email: user.email,
           full_name: user.full_name,
-          nta_level: user.nta_level || '',
+          level: user.level || user.nta_level || '',
+          nta_level: user.level || user.nta_level || '', // Key for backward compatibility
           phone: user.phone || '',
           college: user.college || ''
         }
@@ -75,24 +76,24 @@ class AuthController {
    */
   static async register(req, res) {
     try {
-      const { username, email, fullName, password, ntaLevel, level, phone, college } = req.body;
+      const { username, email, fullName, password, level, ntaLevel, phone, college } = req.body;
 
-      const userNtaLevel = ntaLevel || level;
+      // Support both 'level' and 'ntaLevel' keys seamlessly
+      const userLevel = level || ntaLevel;
 
-      if (!username || !email || !fullName || !password || !userNtaLevel) {
+      if (!username || !email || !fullName || !password || !userLevel) {
         return res.status(400).json({ 
           success: false, 
           message: 'All required fields must be filled' 
         });
       }
 
-      // Updated to include levels present in Android RegisterActivity
       const allowedLevels = [
         'NTA Level 4', 'NTA Level 5', 'NTA Level 6', 
         'NVA', 'Secretarial', 'Degree', 'Masters', 'PhD', 'Others'
       ];
       
-      if (!allowedLevels.includes(userNtaLevel)) {
+      if (!allowedLevels.includes(userLevel)) {
         return res.status(400).json({ 
           success: false, 
           message: 'Invalid Education Level' 
@@ -121,7 +122,7 @@ class AuthController {
         email,
         fullName,
         password: hashedPassword,
-        ntaLevel: userNtaLevel,
+        level: userLevel,
         phone,
         college
       });
