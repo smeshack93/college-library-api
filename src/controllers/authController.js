@@ -54,9 +54,9 @@ class AuthController {
           username: user.username, 
           email: user.email,
           full_name: user.full_name,
-          nta_level: user.nta_level,
-          phone: user.phone || null,
-          college: user.college || null
+          nta_level: user.nta_level || '',
+          phone: user.phone || '',
+          college: user.college || ''
         }
       });
       
