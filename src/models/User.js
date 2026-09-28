@@ -12,7 +12,7 @@ class User {
 
   static async findById(id) {
     const [rows] = await pool.execute(
-      'SELECT id, username, email, full_name, nta_level FROM users WHERE id = ? AND is_active = 1',
+      'SELECT id, username, email, full_name, nta_level, phone, college FROM users WHERE id = ? AND is_active = 1',
       [id]
     );
     return rows[0] || null;
@@ -31,13 +31,14 @@ class User {
   }
 
   static async create(userData) {
-    const { username, email, fullName, password, ntaLevel } = userData;
+    const { username, email, fullName, password, ntaLevel, phone, college } = userData;
     
+    // Safely handles optional phone and college fields without breaking existing schema calls
     const [result] = await pool.execute(
       `INSERT INTO users 
-       (username, email, full_name, password, nta_level, password_format, password_migrated, is_active) 
-       VALUES (?, ?, ?, ?, ?, 'PBKDF2', 1, 1)`,
-      [username, email, fullName, password, ntaLevel]
+       (username, email, full_name, password, nta_level, phone, college, password_format, password_migrated, is_active) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'PBKDF2', 1, 1)`,
+      [username, email, fullName, password, ntaLevel, phone || null, college || null]
     );
     return result.insertId;
   }
