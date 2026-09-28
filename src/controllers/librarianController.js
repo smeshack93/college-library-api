@@ -226,7 +226,7 @@ class LibrarianController {
                     br.notes,
                     u.full_name AS userName,
                     u.username  AS userUsername,
-                    u.nta_level AS userNtaLevel,
+                    u.level     AS userNtaLevel,  -- Updated to read from 'level' in DB
                     b.title     AS bookTitle,
                     b.author    AS bookAuthor,
                     b.isbn      AS bookIsbn,
@@ -495,7 +495,7 @@ class LibrarianController {
                     br.remark_date,
                     u.full_name AS userName,
                     u.username  AS userUsername,
-                    u.nta_level AS userNtaLevel,
+                    u.level     AS userNtaLevel,  -- Updated to read from 'level' in DB
                     b.title     AS bookTitle,
                     b.author    AS bookAuthor,
                     b.isbn      AS bookIsbn,
