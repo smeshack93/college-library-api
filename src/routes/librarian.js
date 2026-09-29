@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const LibrarianController = require('../controllers/librarianController');
-const librarianAuth = require('../middleware/librarianAuth');
+// Import librarianAuth from auth.js instead of looking for a non-existent librarianAuth.js
+const { librarianAuth } = require('../middleware/auth');
 
 /**
  * @route   POST /api/librarian/login
