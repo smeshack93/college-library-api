@@ -60,15 +60,14 @@ class LibrarianController {
                 });
             }
 
-            // Updated query: selecting `password` instead of `password_hash`
             const [rows] = await pool.execute(
-             `SELECT id, username, password, full_name, employee_id, email, phone, is_active 
+                `SELECT id, username, password, full_name, employee_id, email, phone, is_active 
                  FROM librarians 
                  WHERE username = ? OR employee_id = ? OR email = ?`,
                 [username, username, username]
             );
 
-            if (!rows || rows.length === 0) {
+            if (!rows || !Array.isArray(rows) || rows.length === 0) {
                 return res.status(401).json({
                     success: false,
                     message: 'Invalid librarian credentials'
@@ -84,7 +83,6 @@ class LibrarianController {
                 });
             }
 
-            // Check hashed password using `librarian.password`
             const isMatch = await bcrypt.compare(password, librarian.password);
             if (!isMatch) {
                 return res.status(401).json({
@@ -494,7 +492,6 @@ class LibrarianController {
             const salt = await bcrypt.genSalt(10);
             const passwordHash = await bcrypt.hash(newPassword, salt);
 
-            // Updated query: writing to `password` column
             await pool.execute(
                 `UPDATE librarians SET password = ? WHERE id = ?`,
                 [passwordHash, rows[0].id]
