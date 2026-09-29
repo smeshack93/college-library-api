@@ -45,6 +45,5 @@ pool.getConnection()
         console.error('- Error Details:', err.message);
     });
 
-// Support both destructured import { pool } and default import
-module.exports = pool;
-module.exports.pool = pool;
+// Clean export object avoiding self-referential circular references
+module.exports = { pool };
