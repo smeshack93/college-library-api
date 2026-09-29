@@ -1,6 +1,57 @@
 const { pool } = require('../config/database');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+
+/**
+ * Helper function to verify PBKDF2 hashes stored in format:
+ * PBKDF2:iterations:saltBase64:hashBase64
+ */
+function verifyPbkdf2Password(password, storedHash) {
+    try {
+        const parts = storedHash.split(':');
+        if (parts.length !== 4 || parts[0] !== 'PBKDF2') {
+            return false;
+        }
+
+        const iterations = parseInt(parts[1], 10);
+        const salt = Buffer.from(parts[2], 'base64');
+        const originalHash = Buffer.from(parts[3], 'base64');
+
+        // Derived key length in bytes matches the original hash buffer length
+        const keylen = originalHash.length;
+
+        const derivedHash = crypto.pbkdf2Sync(
+            password,
+            salt,
+            iterations,
+            keylen,
+            'sha256'
+        );
+
+        return crypto.timingSafeEqual(originalHash, derivedHash);
+    } catch (err) {
+        console.error('PBKDF2 Verification Error:', err);
+        return false;
+    }
+}
+
+/**
+ * Helper function to verify passwords regardless of format (BCRYPT or PBKDF2)
+ */
+async function verifyPassword(inputPassword, librarian) {
+    const storedHash = librarian.password;
+
+    if (!storedHash) return false;
+
+    // 1. PBKDF2 Hash Format Check
+    if (storedHash.startsWith('PBKDF2:') || librarian.password_format === 'PBKDF2') {
+        return verifyPbkdf2Password(inputPassword, storedHash);
+    }
+
+    // 2. Standard Bcrypt Check
+    return await bcrypt.compare(inputPassword, storedHash);
+}
 
 class LibrarianController {
 
@@ -61,7 +112,7 @@ class LibrarianController {
             }
 
             const [rows] = await pool.execute(
-                `SELECT id, username, password, full_name, employee_id, email, phone, is_active 
+                `SELECT id, username, password, password_format, full_name, employee_id, email, phone, is_active 
                  FROM librarians 
                  WHERE username = ? OR employee_id = ? OR email = ?`,
                 [username, username, username]
@@ -83,7 +134,8 @@ class LibrarianController {
                 });
             }
 
-            const isMatch = await bcrypt.compare(password, librarian.password);
+            // Verify password using PBKDF2 or Bcrypt based on stored format
+            const isMatch = await verifyPassword(password, librarian);
             if (!isMatch) {
                 return res.status(401).json({
                     success: false,
@@ -493,7 +545,7 @@ class LibrarianController {
             const passwordHash = await bcrypt.hash(newPassword, salt);
 
             await pool.execute(
-                `UPDATE librarians SET password = ? WHERE id = ?`,
+                `UPDATE librarians SET password = ?, password_format = 'BCRYPT' WHERE id = ?`,
                 [passwordHash, rows[0].id]
             );
 
