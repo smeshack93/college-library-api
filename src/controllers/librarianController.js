@@ -19,7 +19,7 @@ class LibrarianController {
                 [librarianId]
             );
 
-            if (rows.length === 0) {
+            if (!rows || rows.length === 0) {
                 return res.status(404).json({
                     success: false,
                     message: 'Librarian not found'
@@ -61,15 +61,16 @@ class LibrarianController {
                 });
             }
 
+            // Updated query: selecting `password` instead of `password_hash`
             const [rows] = await pool.execute(
-                `SELECT id, username, password_hash, full_name, employee_id, email, 
+                `SELECT id, username, password, full_name, employee_id, email, 
                         COALESCE(phone, phone_number) AS phone, is_active 
                  FROM librarians 
                  WHERE username = ? OR employee_id = ? OR email = ?`,
                 [username, username, username]
             );
 
-            if (rows.length === 0) {
+            if (!rows || rows.length === 0) {
                 return res.status(401).json({
                     success: false,
                     message: 'Invalid librarian credentials'
@@ -85,7 +86,8 @@ class LibrarianController {
                 });
             }
 
-            const isMatch = await bcrypt.compare(password, librarian.password_hash);
+            // Check hashed password using `librarian.password`
+            const isMatch = await bcrypt.compare(password, librarian.password);
             if (!isMatch) {
                 return res.status(401).json({
                     success: false,
@@ -155,8 +157,8 @@ class LibrarianController {
 
             res.json({
                 success: true,
-                count: rows.length,
-                requests: rows
+                count: rows ? rows.length : 0,
+                requests: rows || []
             });
         } catch (error) {
             console.error('Get pending requests error:', error);
@@ -184,7 +186,7 @@ class LibrarianController {
                 [requestId]
             );
 
-            if (requests.length === 0) {
+            if (!requests || requests.length === 0) {
                 await connection.rollback();
                 return res.status(404).json({
                     success: false,
@@ -200,7 +202,7 @@ class LibrarianController {
                     [request.book_id]
                 );
 
-                if (books.length === 0 || books[0].available_copies <= 0) {
+                if (!books || books.length === 0 || books[0].available_copies <= 0) {
                     await connection.rollback();
                     return res.status(400).json({
                         success: false,
@@ -277,7 +279,7 @@ class LibrarianController {
                 [requestId]
             );
 
-            if (requests.length === 0) {
+            if (!requests || requests.length === 0) {
                 return res.status(404).json({
                     success: false,
                     message: 'Pending request not found'
@@ -318,10 +320,10 @@ class LibrarianController {
             res.json({
                 success: true,
                 statistics: {
-                    totalBooks: totalBooks.count || 0,
-                    pendingRequests: pendingRequests.count || 0,
-                    activeBorrows: activeBorrows.count || 0,
-                    totalUsers: totalUsers.count || 0
+                    totalBooks: totalBooks ? totalBooks.count : 0,
+                    pendingRequests: pendingRequests ? pendingRequests.count : 0,
+                    activeBorrows: activeBorrows ? activeBorrows.count : 0,
+                    totalUsers: totalUsers ? totalUsers.count : 0
                 }
             });
         } catch (error) {
@@ -385,8 +387,8 @@ class LibrarianController {
 
             res.json({
                 success: true,
-                count: rows.length,
-                history: rows
+                count: rows ? rows.length : 0,
+                history: rows || []
             });
         } catch (error) {
             console.error('Get request history error:', error);
@@ -444,7 +446,7 @@ class LibrarianController {
                 [username, employeeId, email]
             );
 
-            if (rows.length === 0) {
+            if (!rows || rows.length === 0) {
                 return res.status(404).json({
                     success: false,
                     message: 'No matching active librarian account found with these details.'
@@ -484,7 +486,7 @@ class LibrarianController {
                 [username, employeeId]
             );
 
-            if (rows.length === 0) {
+            if (!rows || rows.length === 0) {
                 return res.status(404).json({
                     success: false,
                     message: 'Account non-existent or inactive.'
@@ -494,8 +496,9 @@ class LibrarianController {
             const salt = await bcrypt.genSalt(10);
             const passwordHash = await bcrypt.hash(newPassword, salt);
 
+            // Updated query: writing to `password` column
             await pool.execute(
-                `UPDATE librarians SET password_hash = ? WHERE id = ?`,
+                `UPDATE librarians SET password = ? WHERE id = ?`,
                 [passwordHash, rows[0].id]
             );
 
