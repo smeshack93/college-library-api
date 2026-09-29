@@ -12,8 +12,7 @@ class LibrarianController {
         try {
             const librarianId = req.user.id;
             const [rows] = await pool.execute(
-                `SELECT id, username, full_name, employee_id, email, 
-                        COALESCE(phone, phone_number) AS phone 
+               `SELECT id, username, full_name, employee_id, email, phone 
                  FROM librarians 
                  WHERE id = ? AND is_active = 1`,
                 [librarianId]
@@ -63,8 +62,7 @@ class LibrarianController {
 
             // Updated query: selecting `password` instead of `password_hash`
             const [rows] = await pool.execute(
-                `SELECT id, username, password, full_name, employee_id, email, 
-                        COALESCE(phone, phone_number) AS phone, is_active 
+             `SELECT id, username, password, full_name, employee_id, email, phone, is_active 
                  FROM librarians 
                  WHERE username = ? OR employee_id = ? OR email = ?`,
                 [username, username, username]
@@ -474,10 +472,10 @@ class LibrarianController {
         try {
             const { username, employeeId, newPassword } = req.body;
 
-            if (!newPassword || newPassword.length < 6) {
+            if (!newPassword || newPassword.length < 8) {
                 return res.status(400).json({
                     success: false,
-                    message: 'New password must be at least 6 characters long.'
+                    message: 'New password must be at least 8 characters long.'
                 });
             }
 
