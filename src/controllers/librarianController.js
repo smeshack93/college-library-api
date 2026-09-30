@@ -2,6 +2,63 @@ const { pool } = require('../config/database');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const admin = require('firebase-admin');
+
+// Initialize Firebase Admin Messaging instance (safe fallback if firebase-admin initialized globally)
+let messaging = null;
+try {
+    messaging = admin.messaging();
+} catch (e) {
+    // Messaging will be initialized when admin app is configured
+}
+
+/**
+ * Helper to send push notifications using Firebase Cloud Messaging HTTP v1 API
+ */
+async function sendApprovalNotification(userId, deviceToken, requestId, bookTitle) {
+    if (!messaging) {
+        try {
+            messaging = admin.messaging();
+        } catch (e) {
+            console.warn('Firebase Admin messaging is not initialized. Skipping push notification.');
+            return false;
+        }
+    }
+
+    const message = {
+        token: deviceToken,
+        notification: {
+            title: 'Request Approved',
+            body: `Your request for "${bookTitle}" has been approved!`
+        },
+        data: {
+            requestId: requestId.toString(),
+            type: 'BORROW_APPROVED'
+        }
+    };
+
+    try {
+        const response = await messaging.send(message);
+        console.log('Successfully sent push notification:', response);
+        return true;
+    } catch (error) {
+        console.error('Error sending push notification:', error);
+        
+        // If token is invalid or unregistered, clean it up from MySQL DB
+        if (
+            error.code === 'messaging/registration-token-not-registered' ||
+            error.code === 'messaging/invalid-registration-token'
+        ) {
+            try {
+                await pool.execute('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
+                console.log(`Removed invalid FCM token for user ID: ${userId}`);
+            } catch (dbErr) {
+                console.error('Failed to remove invalid FCM token from database:', dbErr);
+            }
+        }
+        return false;
+    }
+}
 
 /**
  * Helper function to verify PBKDF2 hashes stored in format:
@@ -232,7 +289,10 @@ class LibrarianController {
             const librarianId = req.user ? req.user.id : null;
 
             const [requests] = await connection.execute(
-                `SELECT * FROM book_requests WHERE id = ? AND status = 'PENDING'`,
+                `SELECT br.*, b.title AS book_title 
+                 FROM book_requests br 
+                 JOIN books b ON br.book_id = b.id 
+                 WHERE br.id = ? AND br.status = 'PENDING'`,
                 [requestId]
             );
 
@@ -323,6 +383,26 @@ class LibrarianController {
             );
 
             await connection.commit();
+
+            // Fire-and-forget push notification post-transaction
+            (async () => {
+                try {
+                    const [userRows] = await pool.execute(
+                        'SELECT fcm_token FROM users WHERE id = ?',
+                        [request.user_id]
+                    );
+                    if (userRows && userRows.length > 0 && userRows[0].fcm_token) {
+                        await sendApprovalNotification(
+                            request.user_id,
+                            userRows[0].fcm_token,
+                            requestId,
+                            request.book_title || 'Requested Book'
+                        );
+                    }
+                } catch (notifErr) {
+                    console.error('Failed to trigger approval notification:', notifErr);
+                }
+            })();
 
             res.json({
                 success: true,
