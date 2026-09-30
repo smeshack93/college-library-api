@@ -441,14 +441,21 @@ class LibrarianController {
     /**
      * Get request history with optional filtering
      * GET /api/librarian/requests/history
+     *
+     * NOTE: LIMIT is inlined as a validated integer literal (clamped 1–1000)
+     * to avoid MySQL 8's strict prepared-statement typing which throws
+     * ER_WRONG_ARGUMENTS (errno 1210) when LIMIT is bound as a parameter
+     * alongside string parameters.
      */
     static async getRequestHistory(req, res) {
         try {
             const { status, requestType, search, limit } = req.query;
 
-            // Safely parse limit and default to 200 if missing or invalid
+            // Safely parse limit and default to 200 if missing or invalid.
+            // Clamp to a hard ceiling to prevent accidental large scans.
             const parsedLimit = parseInt(limit, 10);
-            const finalLimit = (!isNaN(parsedLimit) && parsedLimit > 0) ? parsedLimit : 200;
+            let finalLimit = (!isNaN(parsedLimit) && parsedLimit > 0) ? parsedLimit : 200;
+            if (finalLimit > 1000) finalLimit = 1000;
 
             let query = `
                 SELECT 
@@ -476,21 +483,24 @@ class LibrarianController {
 
             if (status && status !== 'ALL') {
                 query += ` AND br.status = ?`;
-                params.push(status.toUpperCase());
+                params.push(String(status).toUpperCase());
             }
 
             if (requestType && requestType !== 'ALL') {
                 query += ` AND br.request_type = ?`;
-                params.push(requestType.toUpperCase());
+                params.push(String(requestType).toUpperCase());
             }
 
-            if (search && search.trim() !== '') {
+            if (search && String(search).trim() !== '') {
+                const term = `%${String(search).trim()}%`;
                 query += ` AND (u.full_name LIKE ? OR b.title LIKE ?)`;
-                params.push(`%${search.trim()}%`, `%${search.trim()}%`);
+                params.push(term, term);
             }
 
-            query += ` ORDER BY br.request_date DESC LIMIT ?`;
-            params.push(finalLimit);
+            // ✅ Inline LIMIT as a validated integer literal (safe — value is a
+            // JS number clamped between 1 and 1000). This avoids MySQL 8 strict
+            // prepared-statement type errors (ER_WRONG_ARGUMENTS 1210).
+            query += ` ORDER BY br.request_date DESC LIMIT ${finalLimit}`;
 
             const [rows] = await pool.execute(query, params);
 
