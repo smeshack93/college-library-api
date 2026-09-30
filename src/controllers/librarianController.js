@@ -143,14 +143,17 @@ class LibrarianController {
                 });
             }
 
+            const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
+
             const token = jwt.sign(
                 {
                     id: librarian.id,
                     username: librarian.username,
                     employeeId: librarian.employee_id,
+                    type: 'LIBRARIAN',
                     role: 'librarian'
                 },
-                process.env.JWT_SECRET || 'your_fallback_secret_key',
+                JWT_SECRET,
                 { expiresIn: '24h' }
             );
 
