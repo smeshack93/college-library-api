@@ -194,7 +194,9 @@ class LibrarianController {
                     br.request_type,
                     br.status,
                     br.request_date,
-                    br.request_date AS created_at
+                    br.request_date AS created_at,
+                    br.notes,
+                    br.remark AS remarks
                 FROM book_requests br
                 JOIN users u ON br.user_id = u.id
                 JOIN books b ON br.book_id = b.id
@@ -246,11 +248,11 @@ class LibrarianController {
 
             if (request.request_type === 'BORROW') {
                 const [books] = await connection.execute(
-                    `SELECT available_copies FROM books WHERE id = ? FOR UPDATE`,
+                    `SELECT available_quantity FROM books WHERE id = ? FOR UPDATE`,
                     [request.book_id]
                 );
 
-                if (!books || books.length === 0 || books[0].available_copies <= 0) {
+                if (!books || books.length === 0 || books[0].available_quantity <= 0) {
                     await connection.rollback();
                     return res.status(400).json({
                         success: false,
@@ -259,7 +261,7 @@ class LibrarianController {
                 }
 
                 await connection.execute(
-                    `UPDATE books SET available_copies = available_copies - 1 WHERE id = ?`,
+                    `UPDATE books SET available_quantity = available_quantity - 1 WHERE id = ?`,
                     [request.book_id]
                 );
 
@@ -274,15 +276,19 @@ class LibrarianController {
                         [request.user_id, request.book_id, borrowDate, dueDate]
                     );
                 } catch (err) {
-                    await connection.execute(
-                        `INSERT INTO user_borrows (user_id, book_id, borrow_date, due_date, status, created_at)
-                         VALUES (?, ?, ?, ?, 'BORROWED', NOW())`,
-                        [request.user_id, request.book_id, borrowDate, dueDate]
-                    );
+                    try {
+                        await connection.execute(
+                            `INSERT INTO user_borrows (user_id, book_id, borrow_date, due_date, status, created_at)
+                             VALUES (?, ?, ?, ?, 'BORROWED', NOW())`,
+                            [request.user_id, request.book_id, borrowDate, dueDate]
+                        );
+                    } catch (e) {
+                        // Borrows table insertion fallback silently handled if tracked only via requests
+                    }
                 }
             } else if (request.request_type === 'RETURN') {
                 await connection.execute(
-                    `UPDATE books SET available_copies = available_copies + 1 WHERE id = ?`,
+                    `UPDATE books SET available_quantity = available_quantity + 1 WHERE id = ?`,
                     [request.book_id]
                 );
 
@@ -295,19 +301,23 @@ class LibrarianController {
                         [request.user_id, request.book_id]
                     );
                 } catch (err) {
-                    await connection.execute(
-                        `UPDATE user_borrows 
-                         SET status = 'RETURNED', return_date = NOW() 
-                         WHERE user_id = ? AND book_id = ? AND status = 'BORROWED'
-                         ORDER BY borrow_date ASC LIMIT 1`,
-                        [request.user_id, request.book_id]
-                    );
+                    try {
+                        await connection.execute(
+                            `UPDATE user_borrows 
+                             SET status = 'RETURNED', return_date = NOW() 
+                             WHERE user_id = ? AND book_id = ? AND status = 'BORROWED'
+                             ORDER BY borrow_date ASC LIMIT 1`,
+                            [request.user_id, request.book_id]
+                        );
+                    } catch (e) {
+                        // Borrows table update fallback
+                    }
                 }
             }
 
             await connection.execute(
                 `UPDATE book_requests 
-                 SET status = 'APPROVED', processed_by = ?, processed_at = NOW() 
+                 SET status = 'APPROVED', approved_by = ?, approval_date = NOW() 
                  WHERE id = ?`,
                 [librarianId, requestId]
             );
@@ -337,8 +347,8 @@ class LibrarianController {
     static async rejectRequest(req, res) {
         try {
             const requestId = req.params.id;
-            const { rejectionReason, reason } = req.body;
-            const finalReason = rejectionReason || reason || 'No reason provided';
+            const { rejectionReason, reason, notes } = req.body;
+            const finalReason = rejectionReason || reason || notes || 'No reason provided';
             const librarianId = req.user ? req.user.id : null;
 
             const [requests] = await pool.execute(
@@ -353,21 +363,12 @@ class LibrarianController {
                 });
             }
 
-            try {
-                await pool.execute(
-                    `UPDATE book_requests 
-                     SET status = 'REJECTED', rejection_reason = ?, processed_by = ?, processed_at = NOW() 
-                     WHERE id = ?`,
-                    [finalReason, librarianId, requestId]
-                );
-            } catch (err) {
-                await pool.execute(
-                    `UPDATE book_requests 
-                     SET status = 'REJECTED', remarks = ?, processed_by = ?, processed_at = NOW() 
-                     WHERE id = ?`,
-                    [finalReason, librarianId, requestId]
-                );
-            }
+            await pool.execute(
+                `UPDATE book_requests 
+                 SET status = 'REJECTED', notes = ?, remark = ?, remark_by = ?, remark_date = NOW() 
+                 WHERE id = ?`,
+                [finalReason, finalReason, librarianId, requestId]
+            );
 
             res.json({
                 success: true,
@@ -389,7 +390,7 @@ class LibrarianController {
     static async getStatistics(req, res) {
         try {
             const [[totalBooks]] = await pool.execute(`SELECT COUNT(*) AS count FROM books`);
-            const [[availableBooks]] = await pool.execute(`SELECT SUM(available_copies) AS count FROM books`);
+            const [[availableBooks]] = await pool.execute(`SELECT SUM(available_quantity) AS count FROM books`);
             const [[pendingRequests]] = await pool.execute(`SELECT COUNT(*) AS count FROM book_requests WHERE status = 'PENDING'`);
             const [[totalUsers]] = await pool.execute(`SELECT COUNT(*) AS count FROM users`);
             
@@ -403,15 +404,10 @@ class LibrarianController {
 
             let activeBorrowsCount = 0;
             try {
-                const [[borrows]] = await pool.execute(`SELECT COUNT(*) AS count FROM borrows WHERE status = 'BORROWED'`);
+                const [[borrows]] = await pool.execute(`SELECT COUNT(*) AS count FROM book_requests WHERE status = 'APPROVED' AND request_type = 'BORROW'`);
                 activeBorrowsCount = borrows ? borrows.count : 0;
-            } catch (err) {
-                try {
-                    const [[userBorrows]] = await pool.execute(`SELECT COUNT(*) AS count FROM user_borrows WHERE status = 'BORROWED'`);
-                    activeBorrowsCount = userBorrows ? userBorrows.count : 0;
-                } catch (e) {
-                    activeBorrowsCount = 0;
-                }
+            } catch (e) {
+                activeBorrowsCount = 0;
             }
 
             const statsData = {
@@ -461,10 +457,11 @@ class LibrarianController {
                     b.author AS book_author,
                     br.request_type,
                     br.status,
-                    br.remarks,
+                    br.notes,
+                    br.remark AS remarks,
                     br.request_date AS created_at,
                     br.request_date,
-                    br.processed_at
+                    br.approval_date AS processed_at
                 FROM book_requests br
                 JOIN users u ON br.user_id = u.id
                 JOIN books b ON br.book_id = b.id
@@ -516,6 +513,7 @@ class LibrarianController {
         try {
             const requestId = req.params.id;
             const { remark } = req.body;
+            const librarianId = req.user ? req.user.id : null;
 
             if (!remark) {
                 return res.status(400).json({
@@ -525,8 +523,8 @@ class LibrarianController {
             }
 
             await pool.execute(
-                `UPDATE book_requests SET remarks = ? WHERE id = ?`,
-                [remark, requestId]
+                `UPDATE book_requests SET remark = ?, remark_by = ?, remark_date = NOW() WHERE id = ?`,
+                [remark, librarianId, requestId]
             );
 
             res.json({
