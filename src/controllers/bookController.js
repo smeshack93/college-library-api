@@ -1,6 +1,6 @@
 // controllers/bookController.js
 const Book = require('../models/Book');
-const pool = require('../config/database');
+const { pool } = require('../config/database');
 
 class BookController {
     /**
