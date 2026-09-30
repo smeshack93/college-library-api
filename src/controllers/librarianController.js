@@ -444,7 +444,11 @@ class LibrarianController {
      */
     static async getRequestHistory(req, res) {
         try {
-            const { status, requestType, search, limit = 200 } = req.query;
+            const { status, requestType, search, limit } = req.query;
+
+            // Safely parse limit and default to 200 if missing or invalid
+            const parsedLimit = parseInt(limit, 10);
+            const finalLimit = (!isNaN(parsedLimit) && parsedLimit > 0) ? parsedLimit : 200;
 
             let query = `
                 SELECT 
@@ -486,7 +490,7 @@ class LibrarianController {
             }
 
             query += ` ORDER BY br.request_date DESC LIMIT ?`;
-params.push(parseInt(limit, 10)); // ✅ passes integer 200
+            params.push(finalLimit);
 
             const [rows] = await pool.execute(query, params);
 
