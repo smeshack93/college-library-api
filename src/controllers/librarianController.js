@@ -18,7 +18,6 @@ function verifyPbkdf2Password(password, storedHash) {
         const salt = Buffer.from(parts[2], 'base64');
         const originalHash = Buffer.from(parts[3], 'base64');
 
-        // Derived key length in bytes matches the original hash buffer length
         const keylen = originalHash.length;
 
         const derivedHash = crypto.pbkdf2Sync(
@@ -44,12 +43,10 @@ async function verifyPassword(inputPassword, librarian) {
 
     if (!storedHash) return false;
 
-    // 1. PBKDF2 Hash Format Check
     if (storedHash.startsWith('PBKDF2:') || librarian.password_format === 'PBKDF2') {
         return verifyPbkdf2Password(inputPassword, storedHash);
     }
 
-    // 2. Standard Bcrypt Check
     return await bcrypt.compare(inputPassword, storedHash);
 }
 
@@ -134,7 +131,6 @@ class LibrarianController {
                 });
             }
 
-            // Verify password using PBKDF2 or Bcrypt based on stored format
             const isMatch = await verifyPassword(password, librarian);
             if (!isMatch) {
                 return res.status(401).json({
@@ -209,7 +205,8 @@ class LibrarianController {
             res.json({
                 success: true,
                 count: rows ? rows.length : 0,
-                requests: rows || []
+                requests: rows || [],
+                data: rows || []
             });
         } catch (error) {
             console.error('Get pending requests error:', error);
@@ -340,7 +337,8 @@ class LibrarianController {
     static async rejectRequest(req, res) {
         try {
             const requestId = req.params.id;
-            const { rejectionReason } = req.body;
+            const { rejectionReason, reason } = req.body;
+            const finalReason = rejectionReason || reason || 'No reason provided';
             const librarianId = req.user ? req.user.id : null;
 
             const [requests] = await pool.execute(
@@ -355,12 +353,21 @@ class LibrarianController {
                 });
             }
 
-            await pool.execute(
-                `UPDATE book_requests 
-                 SET status = 'REJECTED', rejection_reason = ?, processed_by = ?, processed_at = NOW() 
-                 WHERE id = ?`,
-                [rejectionReason || 'No reason provided', librarianId, requestId]
-            );
+            try {
+                await pool.execute(
+                    `UPDATE book_requests 
+                     SET status = 'REJECTED', rejection_reason = ?, processed_by = ?, processed_at = NOW() 
+                     WHERE id = ?`,
+                    [finalReason, librarianId, requestId]
+                );
+            } catch (err) {
+                await pool.execute(
+                    `UPDATE book_requests 
+                     SET status = 'REJECTED', remarks = ?, processed_by = ?, processed_at = NOW() 
+                     WHERE id = ?`,
+                    [finalReason, librarianId, requestId]
+                );
+            }
 
             res.json({
                 success: true,
@@ -382,8 +389,18 @@ class LibrarianController {
     static async getStatistics(req, res) {
         try {
             const [[totalBooks]] = await pool.execute(`SELECT COUNT(*) AS count FROM books`);
+            const [[availableBooks]] = await pool.execute(`SELECT SUM(available_copies) AS count FROM books`);
             const [[pendingRequests]] = await pool.execute(`SELECT COUNT(*) AS count FROM book_requests WHERE status = 'PENDING'`);
+            const [[totalUsers]] = await pool.execute(`SELECT COUNT(*) AS count FROM users`);
             
+            let activeLibrariansCount = 0;
+            try {
+                const [[librarians]] = await pool.execute(`SELECT COUNT(*) AS count FROM librarians WHERE is_active = 1`);
+                activeLibrariansCount = librarians ? librarians.count : 0;
+            } catch (e) {
+                activeLibrariansCount = 1;
+            }
+
             let activeBorrowsCount = 0;
             try {
                 const [[borrows]] = await pool.execute(`SELECT COUNT(*) AS count FROM borrows WHERE status = 'BORROWED'`);
@@ -397,16 +414,24 @@ class LibrarianController {
                 }
             }
 
-            const [[totalUsers]] = await pool.execute(`SELECT COUNT(*) AS count FROM users`);
+            const statsData = {
+                activeUsers: totalUsers ? totalUsers.count : 0,
+                active_users: totalUsers ? totalUsers.count : 0,
+                activeLibrarians: activeLibrariansCount,
+                active_librarians: activeLibrariansCount,
+                totalBooks: totalBooks ? totalBooks.count : 0,
+                total_books: totalBooks ? totalBooks.count : 0,
+                availableBooks: availableBooks && availableBooks.count !== null ? Number(availableBooks.count) : 0,
+                available_books: availableBooks && availableBooks.count !== null ? Number(availableBooks.count) : 0,
+                pendingRequests: pendingRequests ? pendingRequests.count : 0,
+                pending_requests: pendingRequests ? pendingRequests.count : 0,
+                activeBorrows: activeBorrowsCount
+            };
 
             res.json({
                 success: true,
-                statistics: {
-                    totalBooks: totalBooks ? totalBooks.count : 0,
-                    pendingRequests: pendingRequests ? pendingRequests.count : 0,
-                    activeBorrows: activeBorrowsCount,
-                    totalUsers: totalUsers ? totalUsers.count : 0
-                }
+                statistics: statsData,
+                data: statsData
             });
         } catch (error) {
             console.error('Get statistics error:', error);
@@ -423,7 +448,7 @@ class LibrarianController {
      */
     static async getRequestHistory(req, res) {
         try {
-            const { status, requestType, search, limit = 50 } = req.query;
+            const { status, requestType, search, limit = 200 } = req.query;
 
             let query = `
                 SELECT 
@@ -433,11 +458,12 @@ class LibrarianController {
                     u.email AS user_email,
                     br.book_id,
                     b.title AS book_title,
+                    b.author AS book_author,
                     br.request_type,
                     br.status,
-                    br.rejection_reason,
                     br.remarks,
                     br.request_date AS created_at,
+                    br.request_date,
                     br.processed_at
                 FROM book_requests br
                 JOIN users u ON br.user_id = u.id
@@ -447,19 +473,19 @@ class LibrarianController {
 
             const params = [];
 
-            if (status) {
+            if (status && status !== 'ALL') {
                 query += ` AND br.status = ?`;
                 params.push(status.toUpperCase());
             }
 
-            if (requestType) {
+            if (requestType && requestType !== 'ALL') {
                 query += ` AND br.request_type = ?`;
                 params.push(requestType.toUpperCase());
             }
 
-            if (search) {
+            if (search && search.trim() !== '') {
                 query += ` AND (u.full_name LIKE ? OR b.title LIKE ?)`;
-                params.push(`%${search}%`, `%${search}%`);
+                params.push(`%${search.trim()}%`, `%${search.trim()}%`);
             }
 
             query += ` ORDER BY br.request_date DESC LIMIT ?`;
@@ -470,7 +496,8 @@ class LibrarianController {
             res.json({
                 success: true,
                 count: rows ? rows.length : 0,
-                history: rows || []
+                history: rows || [],
+                data: rows || []
             });
         } catch (error) {
             console.error('Get request history error:', error);
@@ -504,7 +531,12 @@ class LibrarianController {
 
             res.json({
                 success: true,
-                message: 'Remark updated successfully'
+                message: 'Remark updated successfully',
+                data: {
+                    remark,
+                    remarkByName: req.user ? req.user.username : 'Librarian',
+                    remarkDate: new Date().toISOString()
+                }
             });
         } catch (error) {
             console.error('Add remark error:', error);
