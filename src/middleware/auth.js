@@ -56,7 +56,8 @@ const optionalAuthMiddleware = (req, res, next) => {
  */
 const librarianAuth = (req, res, next) => {
   authMiddleware(req, res, () => {
-    if (req.user?.type !== 'LIBRARIAN') {
+    const userRole = req.user?.type || req.user?.role;
+    if (!userRole || userRole.toUpperCase() !== 'LIBRARIAN') {
       return res.status(403).json({ 
         success: false, 
         message: 'Access denied. Librarian only.' 
