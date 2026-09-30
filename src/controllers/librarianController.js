@@ -486,7 +486,7 @@ class LibrarianController {
             }
 
             query += ` ORDER BY br.request_date DESC LIMIT ?`;
-            params.push(parseInt(limit, 10));
+params.push(parseInt(limit, 10)); // ✅ passes integer 200
 
             const [rows] = await pool.execute(query, params);
 
