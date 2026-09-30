@@ -639,6 +639,98 @@ class LibrarianController {
             });
         }
     }
+
+    /**
+     * Get borrow trend analytics for charts
+     * GET /api/librarian/analytics/trends?days=7
+     */
+    static async getBorrowTrends(req, res) {
+        try {
+            // Clamp days between 7 and 90 for safety
+            let days = parseInt(req.query.days, 10);
+            if (isNaN(days) || days < 1) days = 7;
+            if (days > 90) days = 90;
+
+            // 1. Borrows per day (only APPROVED borrow requests)
+            const [dailyRows] = await pool.execute(`
+                SELECT 
+                    DATE(request_date) AS date,
+                    COUNT(*) AS count
+                FROM book_requests
+                WHERE request_type = 'BORROW'
+                  AND status IN ('APPROVED', 'COMPLETED', 'RETURNED')
+                  AND request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                GROUP BY DATE(request_date)
+                ORDER BY date ASC
+            `, [days]);
+
+            // 2. Requests by type (BORROW vs RETURN vs RESERVE)
+            const [typeRows] = await pool.execute(`
+                SELECT 
+                    request_type AS type,
+                    COUNT(*) AS count
+                FROM book_requests
+                WHERE request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                GROUP BY request_type
+            `, [days]);
+
+            // 3. Top 5 most borrowed books
+            const [topBooks] = await pool.execute(`
+                SELECT 
+                    b.title AS title,
+                    b.author AS author,
+                    COUNT(*) AS count
+                FROM book_requests br
+                JOIN books b ON br.book_id = b.id
+                WHERE br.request_type = 'BORROW'
+                  AND br.status IN ('APPROVED', 'COMPLETED', 'RETURNED')
+                  AND br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                GROUP BY b.id, b.title, b.author
+                ORDER BY count DESC
+                LIMIT 5
+            `, [days]);
+
+            // 4. Status distribution
+            const [statusRows] = await pool.execute(`
+                SELECT 
+                    status,
+                    COUNT(*) AS count
+                FROM book_requests
+                WHERE request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                GROUP BY status
+            `, [days]);
+
+            res.json({
+                success: true,
+                data: {
+                    days,
+                    dailyBorrows: dailyRows.map(r => ({
+                        date: r.date,
+                        count: Number(r.count)
+                    })),
+                    byType: typeRows.map(r => ({
+                        type: r.type,
+                        count: Number(r.count)
+                    })),
+                    topBooks: topBooks.map(r => ({
+                        title: r.title,
+                        author: r.author,
+                        count: Number(r.count)
+                    })),
+                    byStatus: statusRows.map(r => ({
+                        status: r.status,
+                        count: Number(r.count)
+                    }))
+                }
+            });
+        } catch (error) {
+            console.error('Get borrow trends error:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Failed to retrieve analytics'
+            });
+        }
+    }
 }
 
 module.exports = LibrarianController;
