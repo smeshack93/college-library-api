@@ -179,45 +179,46 @@ class LibrarianController {
      * Get pending requests for approval/rejection
      * GET /api/librarian/requests/pending
      */
-  static async getPendingRequests(req, res) {
-    try {
-        const [rows] = await pool.execute(`
-            SELECT 
-                br.id,
-                br.user_id AS userId,
-                u.full_name AS userName,
-                u.email AS userEmail,
-                u.nta_level AS userNtaLevel,  // <--- ADDED THIS
-                br.book_id AS bookId,
-                b.title AS bookTitle,
-                b.author AS bookAuthor,
-                b.isbn AS bookIsbn,
-                br.request_type AS requestType,
-                br.status,
-                br.request_date AS requestDate,
-                br.notes,
-                br.remark AS remarks
-            FROM book_requests br
-            JOIN users u ON br.user_id = u.id
-            JOIN books b ON br.book_id = b.id
-            WHERE br.status = 'PENDING'
-            ORDER BY br.request_date ASC
-        `);
+    static async getPendingRequests(req, res) {
+        try {
+            const [rows] = await pool.execute(`
+                SELECT 
+                    br.id,
+                    br.user_id AS userId,
+                    u.full_name AS userName,
+                    u.email AS userEmail,
+                    u.nta_level AS userNtaLevel,
+                    br.book_id AS bookId,
+                    b.title AS bookTitle,
+                    b.author AS bookAuthor,
+                    b.isbn AS bookIsbn,
+                    br.request_type AS requestType,
+                    br.status,
+                    br.request_date AS requestDate,
+                    br.notes,
+                    br.remark AS remarks
+                FROM book_requests br
+                JOIN users u ON br.user_id = u.id
+                JOIN books b ON br.book_id = b.id
+                WHERE br.status = 'PENDING'
+                ORDER BY br.request_date ASC
+            `);
 
-        res.json({
-            success: true,
-            count: rows ? rows.length : 0,
-            requests: rows || [],
-            data: rows || []
-        });
-    } catch (error) {
-        console.error('Get pending requests error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to retrieve pending requests'
-        });
+            res.json({
+                success: true,
+                count: rows ? rows.length : 0,
+                requests: rows || [],
+                data: rows || []
+            });
+        } catch (error) {
+            console.error('Get pending requests error:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Failed to retrieve pending requests'
+            });
+        }
     }
-}
+
     /**
      * Approve book borrow or return request
      * POST /api/librarian/requests/:id/approve
@@ -457,25 +458,25 @@ class LibrarianController {
             if (finalLimit > 1000) finalLimit = 1000;
 
             let query = `
-            SELECT 
-                br.id,
-                br.user_id AS userId,
-                u.full_name AS userName,
-                u.email AS userEmail,
-                u.nta_level AS userNtaLevel,  // <--- ADDED THIS
-                br.book_id AS bookId,
-                b.title AS bookTitle,
-                b.author AS bookAuthor,
-                br.request_type AS requestType,
-                br.status,
-                br.notes,
-                br.remark AS remarks,
-                br.request_date AS requestDate,
-                br.approval_date AS processedAt
-            FROM book_requests br
-            JOIN users u ON br.user_id = u.id
-            JOIN books b ON br.book_id = b.id
-            WHERE 1=1
+                SELECT 
+                    br.id,
+                    br.user_id AS userId,
+                    u.full_name AS userName,
+                    u.email AS userEmail,
+                    u.nta_level AS userNtaLevel,
+                    br.book_id AS bookId,
+                    b.title AS bookTitle,
+                    b.author AS bookAuthor,
+                    br.request_type AS requestType,
+                    br.status,
+                    br.notes,
+                    br.remark AS remarks,
+                    br.request_date AS requestDate,
+                    br.approval_date AS processedAt
+                FROM book_requests br
+                JOIN users u ON br.user_id = u.id
+                JOIN books b ON br.book_id = b.id
+                WHERE 1=1
             `;
 
             const params = [];
