@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const pool = require('../config/database');
+const { pool } = require('../config/database');
 
 class User {
   static async findByEmail(email) {
