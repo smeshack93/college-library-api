@@ -74,4 +74,11 @@ router.get('/requests/history', librarianAuth, LibrarianController.getRequestHis
  */
 router.post('/requests/:id/remark', librarianAuth, LibrarianController.addRequestRemark);
 
+/**
+ * @route   GET /api/librarian/analytics/trends
+ * @desc    Get borrow trend data for charts
+ * @access  Private (Librarian only)
+ */
+router.get('/analytics/trends', librarianAuth, LibrarianController.getBorrowTrends);
+
 module.exports = router;
