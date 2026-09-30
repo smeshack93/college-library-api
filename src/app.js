@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
+const admin = require('firebase-admin');
 
 // 1. Load environment variables from ca.env BEFORE anything else
 require('dotenv').config({ path: path.resolve(__dirname, '../ca.env') });
@@ -16,6 +17,29 @@ const bookRoutes = require('./routes/books');
 const librarianRoutes = require('./routes/librarian');
 
 const app = express();
+
+// --- Firebase Initialization ---
+try {
+  const serviceAccount = JSON.parse(
+    Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, 'base64').toString('utf-8')
+  );
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+
+  // Quick verification log
+  (async () => {
+    try {
+      const token = await admin.auth().createCustomToken("test-user-id");
+      console.log("✅ Firebase initialized successfully. Test token generated.");
+    } catch (err) {
+      console.error("⚠️ Firebase verification failed:", err.message);
+    }
+  })();
+} catch (err) {
+  console.error("❌ Firebase initialization error:", err.message);
+}
 
 // --- Middleware ---
 app.use(helmet()); 
@@ -51,13 +75,11 @@ app.get('/api/health', (req, res) => {
  * SINGLE ROUTE MOUNTING WITH /api PREFIX
  * This is the standard REST practice
  */
-// Support for requests WITH /api prefix (Standard REST practice)
 app.use('/api/auth', authRoutes);           
 app.use('/api/books', bookRoutes);         
 app.use('/api/librarian', librarianRoutes); 
 
 // --- Error Handling ---
-
 app.use((req, res) => {
   res.status(404).json({ 
     success: false, 
