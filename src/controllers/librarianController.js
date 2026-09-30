@@ -184,17 +184,16 @@ class LibrarianController {
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id,
-                    br.user_id,
-                    u.full_name AS user_name,
-                    u.email AS user_email,
-                    br.book_id,
-                    b.title AS book_title,
-                    b.author AS book_author,
-                    b.isbn,
-                    br.request_type,
+                    br.user_id AS userId,
+                    u.full_name AS userName,
+                    u.email AS userEmail,
+                    br.book_id AS bookId,
+                    b.title AS bookTitle,
+                    b.author AS bookAuthor,
+                    b.isbn AS bookIsbn,
+                    br.request_type AS requestType,
                     br.status,
-                    br.request_date,
-                    br.request_date AS created_at,
+                    br.request_date AS requestDate,
                     br.notes,
                     br.remark AS remarks
                 FROM book_requests br
@@ -460,19 +459,18 @@ class LibrarianController {
             let query = `
                 SELECT 
                     br.id,
-                    br.user_id,
-                    u.full_name AS user_name,
-                    u.email AS user_email,
-                    br.book_id,
-                    b.title AS book_title,
-                    b.author AS book_author,
-                    br.request_type,
+                    br.user_id AS userId,
+                    u.full_name AS userName,
+                    u.email AS userEmail,
+                    br.book_id AS bookId,
+                    b.title AS bookTitle,
+                    b.author AS bookAuthor,
+                    br.request_type AS requestType,
                     br.status,
                     br.notes,
                     br.remark AS remarks,
-                    br.request_date AS created_at,
-                    br.request_date,
-                    br.approval_date AS processed_at
+                    br.request_date AS requestDate,
+                    br.approval_date AS processedAt
                 FROM book_requests br
                 JOIN users u ON br.user_id = u.id
                 JOIN books b ON br.book_id = b.id
