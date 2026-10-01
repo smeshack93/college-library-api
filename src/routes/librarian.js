@@ -12,6 +12,13 @@ const { librarianAuth } = require('../middleware/auth');
 router.post('/login', LibrarianController.login);
 
 /**
+ * @route   POST /api/librarian/fcm-token
+ * @desc    Save/update librarian FCM device token
+ * @access  Private (Librarian only)
+ */
+router.post('/fcm-token', librarianAuth, LibrarianController.updateFcmToken);
+
+/**
  * @route   GET /api/librarian/profile
  * @desc    Get current logged in librarian profile info
  * @access  Private (Librarian only)
