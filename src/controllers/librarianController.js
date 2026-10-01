@@ -607,7 +607,7 @@ class LibrarianController {
                 params.push(term, term);
             }
 
-            // ✅ Inline LIMIT as a validated integer literal (safe — value is a
+            // Inline LIMIT as a validated integer literal (safe — value is a
             // JS number clamped between 1 and 1000). This avoids MySQL 8 strict
             // prepared-statement type errors (ER_WRONG_ARGUMENTS 1210).
             query += ` ORDER BY br.request_date DESC LIMIT ${finalLimit}`;
@@ -675,11 +675,25 @@ class LibrarianController {
      */
     static async verifyIdentity(req, res) {
         try {
-            const { username, employeeId, email } = req.body;
+            const employeeId = req.body.employeeId || req.body.employee_id || null;
+            const fullName = req.body.fullName || req.body.full_name || req.body.username || null;
+            const email = req.body.email || null;
 
+            if (!employeeId || !fullName || !email) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Employee ID, Full Name, and Email are required.'
+                });
+            }
+
+            // Query matching employee_id, email, and either full_name OR username
             const [rows] = await pool.execute(
-                `SELECT id FROM librarians WHERE username = ? AND employee_id = ? AND email = ? AND is_active = 1`,
-                [username, employeeId, email]
+                `SELECT id FROM librarians 
+                 WHERE employee_id = ? 
+                   AND email = ? 
+                   AND (full_name = ? OR username = ?) 
+                   AND is_active = 1`,
+                [employeeId, email, fullName, fullName]
             );
 
             if (!rows || rows.length === 0) {
