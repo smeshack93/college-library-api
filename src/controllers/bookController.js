@@ -1,6 +1,7 @@
 // controllers/bookController.js
 const Book = require('../models/Book');
 const { pool } = require('../config/database');
+const admin = require('firebase-admin');
 
 class BookController {
     /**
@@ -104,10 +105,43 @@ class BookController {
                 [userId, bookId, requestType]
             );
 
+            const newRequestId = result.insertId;
+
+            // Notify active librarians via FCM if tokens exist
+            try {
+                const [librarians] = await pool.execute(
+                    'SELECT id, fcm_token FROM librarians WHERE is_active = 1 AND fcm_token IS NOT NULL AND fcm_token != ""'
+                );
+
+                const tokens = librarians.map(l => l.fcm_token).filter(Boolean);
+
+                if (tokens.length > 0) {
+                    const messagePayload = {
+                        tokens: tokens,
+                        notification: {
+                            title: 'New Book Request',
+                            body: `A student requested "${book.title || 'a book'}".`
+                        },
+                        data: {
+                            type: 'NEW_REQUEST',
+                            requestId: String(newRequestId)
+                        }
+                    };
+
+                    if (typeof admin.messaging().sendEachForMulticast === 'function') {
+                        await admin.messaging().sendEachForMulticast(messagePayload);
+                    } else if (typeof admin.messaging().sendMulticast === 'function') {
+                        await admin.messaging().sendMulticast(messagePayload);
+                    }
+                }
+            } catch (notifErr) {
+                console.error('Failed to send push notification to librarians:', notifErr);
+            }
+
             res.status(201).json({
                 success: true,
                 message: 'Book request submitted successfully',
-                requestId: result.insertId
+                requestId: newRequestId
             });
         } catch (error) {
             console.error('Error requesting book:', error);
