@@ -110,6 +110,36 @@ async function verifyPassword(inputPassword, librarian) {
 class LibrarianController {
 
     /**
+     * Update FCM Token for librarian
+     * POST /api/librarian/fcm-token
+     */
+    static async updateFcmToken(req, res) {
+        try {
+            const { token } = req.body;
+            if (!token) {
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'Token required' 
+                });
+            }
+
+            const librarianId = req.user.id;
+            await pool.execute(
+                'UPDATE librarians SET fcm_token = ? WHERE id = ?',
+                [token, librarianId]
+            );
+
+            res.json({ success: true });
+        } catch (error) {
+            console.error('Update FCM token error:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Failed to update FCM token'
+            });
+        }
+    }
+
+    /**
      * Get logged-in Librarian profile details
      * GET /api/librarian/profile
      */
