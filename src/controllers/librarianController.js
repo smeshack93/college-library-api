@@ -556,6 +556,9 @@ class LibrarianController {
      * to avoid MySQL 8's strict prepared-statement typing which throws
      * ER_WRONG_ARGUMENTS (errno 1210) when LIMIT is bound as a parameter
      * alongside string parameters.
+     *
+     * FIX: Added remark_by, remark_date, and librarian full_name (remarkByName)
+     * so Android can display and enforce immutability of remarks.
      */
     static async getRequestHistory(req, res) {
         try {
@@ -577,15 +580,25 @@ class LibrarianController {
                     br.book_id AS bookId,
                     b.title AS bookTitle,
                     b.author AS bookAuthor,
+                    b.isbn AS bookIsbn,
                     br.request_type AS requestType,
                     br.status,
                     br.notes,
-                    br.remark AS remarks,
+                    br.remark,
+                    br.remark_by AS remarkBy,
+                    br.remark_date AS remarkDate,
+                    rl.full_name AS remarkByName,
                     br.request_date AS requestDate,
-                    br.approval_date AS processedAt
+                    br.approval_date AS approvalDate,
+                    br.borrow_date AS borrowDate,
+                    br.due_date AS dueDate,
+                    br.return_date AS returnDate,
+                    pl.full_name AS librarianName
                 FROM book_requests br
                 JOIN users u ON br.user_id = u.id
                 JOIN books b ON br.book_id = b.id
+                LEFT JOIN librarians rl ON br.remark_by = rl.id
+                LEFT JOIN librarians pl ON br.approved_by = pl.id
                 WHERE 1=1
             `;
 
@@ -632,6 +645,11 @@ class LibrarianController {
     /**
      * Add remark to a request
      * POST /api/librarian/requests/:id/remark
+     *
+     * FIX: 
+     * - Enforces immutability: returns 409 Conflict if a remark already exists.
+     * - Returns requestId, remarkByName (full name), remarkDate in the payload
+     *   so the Android client can update the list item inline.
      */
     static async addRequestRemark(req, res) {
         try {
@@ -639,25 +657,80 @@ class LibrarianController {
             const { remark } = req.body;
             const librarianId = req.user ? req.user.id : null;
 
-            if (!remark) {
+            if (!remark || String(remark).trim() === '') {
                 return res.status(400).json({
                     success: false,
                     message: 'Remark content is required'
                 });
             }
 
-            await pool.execute(
-                `UPDATE book_requests SET remark = ?, remark_by = ?, remark_date = NOW() WHERE id = ?`,
-                [remark, librarianId, requestId]
+            if (String(remark).length > 1000) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Remark must be 1000 characters or fewer'
+                });
+            }
+
+            // Verify the request exists and check for an existing immutable remark
+            const [existing] = await pool.execute(
+                `SELECT id, remark FROM book_requests WHERE id = ?`,
+                [requestId]
             );
+
+            if (!existing || existing.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Request not found'
+                });
+            }
+
+            const currentRemark = existing[0].remark;
+            if (currentRemark !== null && String(currentRemark).trim() !== '') {
+                // 409 Conflict — remark is final and cannot be modified
+                return res.status(409).json({
+                    success: false,
+                    message: 'This remark is final and cannot be modified'
+                });
+            }
+
+            await pool.execute(
+                `UPDATE book_requests 
+                 SET remark = ?, remark_by = ?, remark_date = NOW() 
+                 WHERE id = ?`,
+                [String(remark).trim(), librarianId, requestId]
+            );
+
+            // Fetch the librarian's full name for the response
+            let librarianFullName = 'Librarian';
+            if (librarianId) {
+                const [libRows] = await pool.execute(
+                    `SELECT full_name, username FROM librarians WHERE id = ?`,
+                    [librarianId]
+                );
+                if (libRows && libRows.length > 0) {
+                    librarianFullName = libRows[0].full_name || libRows[0].username || 'Librarian';
+                }
+            }
+
+            // Fetch the authoritative remark_date back from the DB so client
+            // and server timestamps match exactly
+            const [freshRows] = await pool.execute(
+                `SELECT remark, remark_date FROM book_requests WHERE id = ?`,
+                [requestId]
+            );
+            const freshRemark = freshRows && freshRows[0] ? freshRows[0].remark : String(remark).trim();
+            const freshRemarkDate = freshRows && freshRows[0] && freshRows[0].remark_date
+                ? freshRows[0].remark_date
+                : new Date().toISOString();
 
             res.json({
                 success: true,
-                message: 'Remark updated successfully',
+                message: 'Remark added successfully',
                 data: {
-                    remark,
-                    remarkByName: req.user ? req.user.username : 'Librarian',
-                    remarkDate: new Date().toISOString()
+                    requestId: parseInt(requestId, 10),
+                    remark: freshRemark,
+                    remarkByName: librarianFullName,
+                    remarkDate: freshRemarkDate
                 }
             });
         } catch (error) {
