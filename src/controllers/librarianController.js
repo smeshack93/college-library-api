@@ -13,9 +13,12 @@ try {
 }
 
 /**
- * Helper to send push notifications using Firebase Cloud Messaging HTTP v1 API
+ * Helper to send push notifications using Firebase Cloud Messaging HTTP v1 API.
+ *
+ * type values (must match MyFirebaseMessagingService on Android):
+ *   REQUEST_APPROVED | REQUEST_REJECTED | RETURN_APPROVED | RETURN_REJECTED
  */
-async function sendApprovalNotification(userId, deviceToken, requestId, bookTitle) {
+async function sendRequestStatusNotification(userId, deviceToken, requestId, bookTitle, type) {
     if (!messaging) {
         try {
             messaging = admin.messaging();
@@ -25,15 +28,47 @@ async function sendApprovalNotification(userId, deviceToken, requestId, bookTitl
         }
     }
 
+    // Human-readable title/body depending on outcome type
+    let title, body;
+    switch (type) {
+        case 'REQUEST_APPROVED':
+            title = 'Request Approved';
+            body  = `Your request for "${bookTitle}" has been approved!`;
+            break;
+        case 'REQUEST_REJECTED':
+            title = 'Request Rejected';
+            body  = `Your request for "${bookTitle}" has been rejected.`;
+            break;
+        case 'RETURN_APPROVED':
+            title = 'Return Approved';
+            body  = `Your return of "${bookTitle}" has been approved.`;
+            break;
+        case 'RETURN_REJECTED':
+            title = 'Return Rejected';
+            body  = `Your return of "${bookTitle}" has been rejected.`;
+            break;
+        default:
+            title = 'Library Update';
+            body  = `There is an update on your request for "${bookTitle}".`;
+    }
+
     const message = {
         token: deviceToken,
-        notification: {
-            title: 'Request Approved',
-            body: `Your request for "${bookTitle}" has been approved!`
-        },
+        notification: { title, body },
         data: {
-            requestId: requestId.toString(),
-            type: 'BORROW_APPROVED'
+            type,
+            requestId: String(requestId),
+            // Keep data title/body populated so the foreground
+            // onMessageReceived() branch can also build a notification.
+            title,
+            body
+        },
+        android: {
+            priority: 'high',
+            notification: {
+                channelId: 'library_requests', // matches CHANNEL_ID in MyFirebaseMessagingService
+                sound: 'default'
+            }
         }
     };
 
@@ -43,8 +78,8 @@ async function sendApprovalNotification(userId, deviceToken, requestId, bookTitl
         return true;
     } catch (error) {
         console.error('Error sending push notification:', error);
-        
-        // If token is invalid or unregistered, clean it up from MySQL DB
+
+        // Prune dead tokens so the DB stays clean
         if (
             error.code === 'messaging/registration-token-not-registered' ||
             error.code === 'messaging/invalid-registration-token'
@@ -422,11 +457,16 @@ class LibrarianController {
                         [request.user_id]
                     );
                     if (userRows && userRows.length > 0 && userRows[0].fcm_token) {
-                        await sendApprovalNotification(
+                        const type = request.request_type === 'RETURN'
+                            ? 'RETURN_APPROVED'
+                            : 'REQUEST_APPROVED';
+
+                        await sendRequestStatusNotification(
                             request.user_id,
                             userRows[0].fcm_token,
                             requestId,
-                            request.book_title || 'Requested Book'
+                            request.book_title || 'Requested Book',
+                            type
                         );
                     }
                 } catch (notifErr) {
@@ -461,8 +501,12 @@ class LibrarianController {
             const finalReason = rejectionReason || reason || notes || 'No reason provided';
             const librarianId = req.user ? req.user.id : null;
 
+            // Join books so we can include the title in the push notification
             const [requests] = await pool.execute(
-                `SELECT * FROM book_requests WHERE id = ? AND status = 'PENDING'`,
+                `SELECT br.*, b.title AS book_title
+                   FROM book_requests br
+                   JOIN books b ON br.book_id = b.id
+                  WHERE br.id = ? AND br.status = 'PENDING'`,
                 [requestId]
             );
 
@@ -473,12 +517,39 @@ class LibrarianController {
                 });
             }
 
+            const request = requests[0];
+
             await pool.execute(
                 `UPDATE book_requests 
                  SET status = 'REJECTED', notes = ?, remark = ?, remark_by = ?, remark_date = NOW() 
                  WHERE id = ?`,
                 [finalReason, finalReason, librarianId, requestId]
             );
+
+            // Fire-and-forget push notification after successful reject
+            (async () => {
+                try {
+                    const [userRows] = await pool.execute(
+                        'SELECT fcm_token FROM users WHERE id = ?',
+                        [request.user_id]
+                    );
+                    if (userRows && userRows.length > 0 && userRows[0].fcm_token) {
+                        const type = request.request_type === 'RETURN'
+                            ? 'RETURN_REJECTED'
+                            : 'REQUEST_REJECTED';
+
+                        await sendRequestStatusNotification(
+                            request.user_id,
+                            userRows[0].fcm_token,
+                            requestId,
+                            request.book_title || 'Requested Book',
+                            type
+                        );
+                    }
+                } catch (notifErr) {
+                    console.error('Failed to trigger rejection notification:', notifErr);
+                }
+            })();
 
             res.json({
                 success: true,
