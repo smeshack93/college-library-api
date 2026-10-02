@@ -116,15 +116,24 @@ class BookController {
                 const tokens = librarians.map(l => l.fcm_token).filter(Boolean);
 
                 if (tokens.length > 0) {
+                    const title = 'New Book Request';
+                    const body  = `A student requested "${book.title || 'a book'}".`;
+
                     const messagePayload = {
                         tokens: tokens,
-                        notification: {
-                            title: 'New Book Request',
-                            body: `A student requested "${book.title || 'a book'}".`
-                        },
+                        notification: { title, body },
                         data: {
                             type: 'NEW_REQUEST',
-                            requestId: String(newRequestId)
+                            requestId: String(newRequestId),
+                            title,
+                            body
+                        },
+                        android: {
+                            priority: 'high',
+                            notification: {
+                                channelId: 'library_requests', // matches CHANNEL_ID on Android
+                                sound: 'default'
+                            }
                         }
                     };
 
