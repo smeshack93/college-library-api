@@ -109,8 +109,16 @@ class BookController {
 
             // Notify active librarians via FCM if tokens exist
             try {
+                // ✅ FIX: use single quotes for the empty-string literal.
+                //    Double quotes are treated as a column identifier when
+                //    ANSI_QUOTES is enabled (Render MySQL default), which
+                //    produced: "Unknown column '' in 'where clause'".
+                //    Single quotes are always a string literal in every mode.
                 const [librarians] = await pool.execute(
-                    'SELECT id, fcm_token FROM librarians WHERE is_active = 1 AND fcm_token IS NOT NULL AND fcm_token != ""'
+                    "SELECT id, fcm_token FROM librarians " +
+                    "WHERE is_active = 1 " +
+                    "AND fcm_token IS NOT NULL " +
+                    "AND fcm_token <> ''"
                 );
 
                 const tokens = librarians.map(l => l.fcm_token).filter(Boolean);
