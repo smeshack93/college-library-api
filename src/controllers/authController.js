@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Librarian = require('../models/Librarian');
+const { pool } = require('../config/database');
 const { sendResetEmail } = require('../config/email');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 
@@ -55,7 +56,7 @@ class AuthController {
           email: user.email,
           full_name: user.full_name,
           level: user.level || user.nta_level || '',
-          nta_level: user.level || user.nta_level || '', // Key for backward compatibility
+          nta_level: user.level || user.nta_level || '',
           phone: user.phone || '',
           college: user.college || ''
         }
@@ -78,7 +79,6 @@ class AuthController {
     try {
       const { username, email, fullName, password, level, ntaLevel, phone, college } = req.body;
 
-      // Support both 'level' and 'ntaLevel' keys seamlessly
       const userLevel = level || ntaLevel;
 
       if (!username || !email || !fullName || !password || !userLevel) {
@@ -332,6 +332,98 @@ class AuthController {
         success: false,
         message: 'Server error'
       });
+    }
+  }
+
+  /**
+   * Update Student Profile
+   * PUT /api/auth/profile
+   * Requires authMiddleware (student JWT)
+   */
+  static async updateStudentProfile(req, res) {
+    try {
+      const userId = req.user ? req.user.id : null;
+      if (!userId) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+      }
+
+      const { username, email, fullName, phone, level } = req.body;
+
+      if (!username && !email && !fullName && !phone && !level) {
+        return res.status(400).json({ success: false, message: 'No fields to update' });
+      }
+
+      // Uniqueness checks (exclude current user)
+      if (email) {
+        const [dup] = await pool.execute(
+          'SELECT id FROM users WHERE email = ? AND id <> ? AND is_active = 1',
+          [email, userId]
+        );
+        if (dup.length > 0) {
+          return res.status(409).json({ success: false, message: 'Email already in use' });
+        }
+      }
+      if (username) {
+        const [dup] = await pool.execute(
+          'SELECT id FROM users WHERE username = ? AND id <> ? AND is_active = 1',
+          [username, userId]
+        );
+        if (dup.length > 0) {
+          return res.status(409).json({ success: false, message: 'Username already in use' });
+        }
+      }
+
+      const allowedLevels = [
+        'NTA Level 4', 'NTA Level 5', 'NTA Level 6',
+        'NVA', 'Secretarial', 'Degree', 'Masters', 'PhD', 'Others'
+      ];
+      if (level && !allowedLevels.includes(level)) {
+        return res.status(400).json({ success: false, message: 'Invalid Education Level' });
+      }
+
+      const fields = [];
+      const params = [];
+      if (username) { fields.push('username = ?');  params.push(username); }
+      if (email)    { fields.push('email = ?');     params.push(email); }
+      if (fullName) { fields.push('full_name = ?'); params.push(fullName); }
+      if (phone)    { fields.push('phone = ?');     params.push(phone); }
+      if (level)    { fields.push('level = ?', 'nta_level = ?'); params.push(level, level); }
+
+      params.push(userId);
+      await pool.execute(
+        `UPDATE users SET ${fields.join(', ')} WHERE id = ? AND is_active = 1`,
+        params
+      );
+
+      const [rows] = await pool.execute(
+        `SELECT id, username, email, full_name, level, phone, college
+           FROM users WHERE id = ?`,
+        [userId]
+      );
+
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      const u = rows[0];
+      return res.json({
+        success: true,
+        message: 'Profile updated successfully',
+        user: {
+          id: u.id,
+          username: u.username,
+          email: u.email,
+          full_name: u.full_name,
+          fullName: u.full_name,
+          level: u.level || '',
+          nta_level: u.level || '',
+          phone: u.phone || '',
+          college: u.college || ''
+        }
+      });
+    } catch (error) {
+      console.error('Update student profile error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to update profile' });
     }
   }
 }
