@@ -216,6 +216,84 @@ class LibrarianController {
     }
 
     /**
+     * Update Librarian Profile (username, email, phone)
+     * PUT /api/librarian/profile
+     * Requires librarianAuth
+     */
+    static async updateLibrarianProfile(req, res) {
+        try {
+            const librarianId = req.user ? req.user.id : null;
+            if (!librarianId) {
+                return res.status(401).json({ success: false, message: 'Authentication required' });
+            }
+
+            const { username, email, phone } = req.body;
+
+            if (!username && !email && !phone) {
+                return res.status(400).json({ success: false, message: 'No fields to update' });
+            }
+
+            if (email) {
+                const [dup] = await pool.execute(
+                    'SELECT id FROM librarians WHERE email = ? AND id <> ? AND is_active = 1',
+                    [email, librarianId]
+                );
+                if (dup.length > 0) {
+                    return res.status(409).json({ success: false, message: 'Email already in use' });
+                }
+            }
+            if (username) {
+                const [dup] = await pool.execute(
+                    'SELECT id FROM librarians WHERE username = ? AND id <> ? AND is_active = 1',
+                    [username, librarianId]
+                );
+                if (dup.length > 0) {
+                    return res.status(409).json({ success: false, message: 'Username already in use' });
+                }
+            }
+
+            const fields = [];
+            const params = [];
+            if (username) { fields.push('username = ?'); params.push(username); }
+            if (email)    { fields.push('email = ?');    params.push(email); }
+            if (phone)    { fields.push('phone = ?');    params.push(phone); }
+
+            params.push(librarianId);
+            await pool.execute(
+                `UPDATE librarians SET ${fields.join(', ')} WHERE id = ? AND is_active = 1`,
+                params
+            );
+
+            const [rows] = await pool.execute(
+                `SELECT id, username, full_name, employee_id, email, phone
+                   FROM librarians WHERE id = ?`,
+                [librarianId]
+            );
+
+            if (!rows || rows.length === 0) {
+                return res.status(404).json({ success: false, message: 'Librarian not found' });
+            }
+
+            const lib = rows[0];
+            return res.json({
+                success: true,
+                message: 'Profile updated successfully',
+                librarian: {
+                    id: lib.id,
+                    username: lib.username,
+                    fullName: lib.full_name,
+                    employeeId: lib.employee_id,
+                    email: lib.email,
+                    phone: lib.phone || 'N/A'
+                }
+            });
+        } catch (error) {
+            console.error('Update librarian profile error:', error);
+            return res.status(500).json({ success: false, message: 'Failed to update profile' });
+        }
+    }
+    
+    /**
      * Librarian Login
      * POST /api/librarian/login
      */
