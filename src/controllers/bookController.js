@@ -300,6 +300,7 @@ class BookController {
 
             // Get ALL borrow requests for this user (including all statuses)
             // Include related request info to check if return was already processed or pending
+            // Include librarian remark fields so students can see them on their record
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
@@ -318,6 +319,10 @@ class BookController {
                     b.category,
                     b.nta_level as ntaLevel,
                     l.full_name as librarianName,
+                    br.remark,
+                    br.remark_by,
+                    br.remark_date,
+                    rl.full_name as remarkByName,
                     -- Check if there's an approved or returned request for this borrow
                     (SELECT COUNT(*) FROM book_requests 
                      WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id)) 
@@ -329,6 +334,7 @@ class BookController {
                 FROM book_requests br
                 JOIN books b ON br.book_id = b.id
                 LEFT JOIN librarians l ON br.approved_by = l.id
+                LEFT JOIN librarians rl ON br.remark_by = rl.id
                 WHERE br.user_id = ?
                 ORDER BY br.request_date DESC
             `, [userId]);
@@ -361,7 +367,11 @@ class BookController {
                 librarianName: row.librarianName || null,
                 relatedRequestId: row.related_request_id || 0,
                 hasApprovedReturn: row.has_approved_return > 0,
-                hasPendingReturn: row.has_pending_return > 0
+                hasPendingReturn: row.has_pending_return > 0,
+                remark: row.remark || null,
+                remarkBy: row.remark_by || null,
+                remarkByName: row.remarkByName || null,
+                remarkDate: row.remark_date || null
             }));
 
             res.json({
@@ -407,9 +417,14 @@ class BookController {
                     b.author as bookAuthor,
                     b.isbn,
                     b.category,
-                    b.nta_level as ntaLevel
+                    b.nta_level as ntaLevel,
+                    br.remark,
+                    br.remark_by,
+                    br.remark_date,
+                    rl.full_name as remarkByName
                 FROM book_requests br
                 JOIN books b ON br.book_id = b.id
+                LEFT JOIN librarians rl ON br.remark_by = rl.id
                 WHERE br.user_id = ?
                 ORDER BY br.request_date DESC
             `, [userId]);
@@ -426,7 +441,11 @@ class BookController {
                 dueDate: row.dueDate || null,
                 category: row.category || 'General',
                 ntaLevel: row.ntaLevel || 'N/A',
-                requestType: row.request_type || 'BORROW'
+                requestType: row.request_type || 'BORROW',
+                remark: row.remark || null,
+                remarkBy: row.remark_by || null,
+                remarkByName: row.remarkByName || null,
+                remarkDate: row.remark_date || null
             }));
 
             res.json({
