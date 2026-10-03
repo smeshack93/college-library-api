@@ -85,18 +85,44 @@ class BookController {
                 });
             }
 
-            // Check if user already has a pending request for this book
-            const [existing] = await pool.execute(
-                `SELECT id FROM book_requests 
-                 WHERE user_id = ? AND book_id = ? AND status = 'PENDING'`,
-                [userId, bookId]
-            );
+            // ============================================================
+            // Duplicate-borrow guard (BORROW requests only)
+            // Blocks a new borrow of the same book while the student still
+            // has an unresolved borrow (PENDING/APPROVED) or an unprocessed
+            // RETURN for that book. RETURN submissions are handled by a
+            // separate endpoint and are intentionally not affected.
+            // ============================================================
+            if (requestType === 'BORROW') {
+                const [activeBorrow] = await pool.execute(
+                    `SELECT id, status, request_type
+                       FROM book_requests
+                      WHERE user_id = ?
+                        AND book_id = ?
+                        AND (
+                              (request_type = 'BORROW' AND status IN ('PENDING', 'APPROVED'))
+                           OR (request_type = 'RETURN' AND status = 'PENDING')
+                        )
+                      LIMIT 1`,
+                    [userId, bookId]
+                );
 
-            if (existing.length > 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'You already have a pending request for this book'
-                });
+                if (activeBorrow.length > 0) {
+                    const row = activeBorrow[0];
+                    let reason;
+                    if (row.request_type === 'RETURN') {
+                        reason = 'You already submitted a return for this book. ' +
+                                 'Please wait for the librarian to process it before borrowing again.';
+                    } else if (row.status === 'APPROVED') {
+                        reason = 'You already have this book borrowed. ' +
+                                 'Please return it before borrowing it again.';
+                    } else {
+                        reason = 'You already have a pending request for this book.';
+                    }
+                    return res.status(400).json({
+                        success: false,
+                        message: reason
+                    });
+                }
             }
 
             const [result] = await pool.execute(
