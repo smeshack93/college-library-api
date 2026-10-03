@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const AuthController = require('../controllers/authController');
-const { optionalAuthMiddleware } = require('../middleware/auth');
+const { optionalAuthMiddleware, authMiddleware } = require('../middleware/auth');
 
 /**
  * Middleware to evaluate express-validator results
@@ -12,7 +12,7 @@ const validateRequest = (req, res, next) => {
   if (!errors.isEmpty()) {
     return res.status(400).json({
       success: false,
-      message: errors.array()[0].msg, // Returns the first error message
+      message: errors.array()[0].msg,
       errors: errors.array()
     });
   }
@@ -28,7 +28,7 @@ router.post('/login', [
   validateRequest
 ], AuthController.login);
 
-// Register (Support both legacy web fields and Android client fields)
+// Register
 router.post('/register', [
   body('username').notEmpty().withMessage('Username is required').trim(),
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
@@ -55,7 +55,6 @@ router.post('/reset-password', [
 ], AuthController.resetPassword);
 
 // Change password (student or librarian)
-// Uses optionalAuthMiddleware so missing/expired tokens won't cause automatic 401 response
 router.post('/change-password', [
   optionalAuthMiddleware,
   body('userId').optional().isInt({ min: 1 }).withMessage('Valid userId is required'),
@@ -63,5 +62,19 @@ router.post('/change-password', [
   body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
   validateRequest
 ], AuthController.changePassword);
+
+// =====================================================
+// NEW: Update student profile (username, email, phone, level)
+// =====================================================
+router.put('/profile', [
+  authMiddleware,
+  body('username').optional().trim().isLength({ min: 3, max: 50 })
+    .withMessage('Username must be 3–50 characters'),
+  body('email').optional().isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('fullName').optional().trim(),
+  body('phone').optional().trim(),
+  body('level').optional().trim(),
+  validateRequest
+], AuthController.updateStudentProfile);
 
 module.exports = router;
