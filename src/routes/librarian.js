@@ -88,4 +88,11 @@ router.post('/requests/:id/remark', librarianAuth, LibrarianController.addReques
  */
 router.get('/analytics/trends', librarianAuth, LibrarianController.getBorrowTrends);
 
+/**
+ * @route   PUT /api/librarian/profile
+ * @desc    Update librarian profile (username, email, phone)
+ * @access  Private (Librarian only)
+ */
+router.put('/profile', librarianAuth, LibrarianController.updateLibrarianProfile);
+
 module.exports = router;
