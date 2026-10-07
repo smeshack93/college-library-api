@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const LibrarianController = require('../controllers/librarianController');
-// Import librarianAuth from auth.js instead of looking for a non-existent librarianAuth.js
 const { librarianAuth } = require('../middleware/auth');
 
 /**
@@ -88,11 +87,34 @@ router.post('/requests/:id/remark', librarianAuth, LibrarianController.addReques
  */
 router.get('/analytics/trends', librarianAuth, LibrarianController.getBorrowTrends);
 
+// --- Book Management (Scoped to Librarian's Institution) ---
+
 /**
- * @route   PUT /api/librarian/profile
- * @desc    Update librarian profile (username, email, phone)
+ * @route   POST /api/librarian/books
+ * @desc    Upload/add a new book (scoped to librarian's institution)
  * @access  Private (Librarian only)
  */
-router.put('/profile', librarianAuth, LibrarianController.updateLibrarianProfile);
+router.post('/books', librarianAuth, LibrarianController.addBook);
+
+/**
+ * @route   GET /api/librarian/books
+ * @desc    List all books belonging to librarian's institution
+ * @access  Private (Librarian only)
+ */
+router.get('/books', librarianAuth, LibrarianController.listMyInstitutionBooks);
+
+/**
+ * @route   PUT /api/librarian/books/:id
+ * @desc    Update a book belonging to librarian's institution
+ * @access  Private (Librarian only)
+ */
+router.put('/books/:id', librarianAuth, LibrarianController.updateMyInstitutionBook);
+
+/**
+ * @route   DELETE /api/librarian/books/:id
+ * @desc    Delete a book belonging to librarian's institution
+ * @access  Private (Librarian only)
+ */
+router.delete('/books/:id', librarianAuth, LibrarianController.deleteMyInstitutionBook);
 
 module.exports = router;
