@@ -15,6 +15,7 @@ const pool = require('./config/database');
 const authRoutes = require('./routes/auth');
 const bookRoutes = require('./routes/books');
 const librarianRoutes = require('./routes/librarian');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 
@@ -73,11 +74,12 @@ app.get('/api/health', (req, res) => {
 
 /**
  * SINGLE ROUTE MOUNTING WITH /api PREFIX
- * This is the standard REST practice
+ * Standard REST practice
  */
 app.use('/api/auth', authRoutes);           
-app.use('/api/books', bookRoutes);         
 app.use('/api/librarian', librarianRoutes); 
+app.use('/api/admin', adminRoutes);
+app.use('/api/books', bookRoutes);         
 
 // --- Error Handling ---
 app.use((req, res) => {
