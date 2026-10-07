@@ -58,15 +58,13 @@ async function sendRequestStatusNotification(userId, deviceToken, requestId, boo
         data: {
             type,
             requestId: String(requestId),
-            // Keep data title/body populated so the foreground
-            // onMessageReceived() branch can also build a notification.
             title,
             body
         },
         android: {
             priority: 'high',
             notification: {
-                channelId: 'library_requests', // matches CHANNEL_ID in MyFirebaseMessagingService
+                channelId: 'library_requests',
                 sound: 'default'
             }
         }
@@ -79,7 +77,6 @@ async function sendRequestStatusNotification(userId, deviceToken, requestId, boo
     } catch (error) {
         console.error('Error sending push notification:', error);
 
-        // Prune dead tokens so the DB stays clean
         if (
             error.code === 'messaging/registration-token-not-registered' ||
             error.code === 'messaging/invalid-registration-token'
@@ -182,7 +179,7 @@ class LibrarianController {
         try {
             const librarianId = req.user.id;
             const [rows] = await pool.execute(
-               `SELECT id, username, full_name, employee_id, email, phone 
+               `SELECT id, username, full_name, employee_id, email, phone, institution 
                  FROM librarians 
                  WHERE id = ? AND is_active = 1`,
                 [librarianId]
@@ -203,7 +200,8 @@ class LibrarianController {
                     fullName: rows[0].full_name,
                     employeeId: rows[0].employee_id,
                     email: rows[0].email,
-                    phone: rows[0].phone || "N/A"
+                    phone: rows[0].phone || "N/A",
+                    institution: rows[0].institution || ""
                 }
             });
         } catch (error) {
@@ -215,84 +213,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Update Librarian Profile (username, email, phone)
-     * PUT /api/librarian/profile
-     * Requires librarianAuth
-     */
-    static async updateLibrarianProfile(req, res) {
-        try {
-            const librarianId = req.user ? req.user.id : null;
-            if (!librarianId) {
-                return res.status(401).json({ success: false, message: 'Authentication required' });
-            }
-
-            const { username, email, phone } = req.body;
-
-            if (!username && !email && !phone) {
-                return res.status(400).json({ success: false, message: 'No fields to update' });
-            }
-
-            if (email) {
-                const [dup] = await pool.execute(
-                    'SELECT id FROM librarians WHERE email = ? AND id <> ? AND is_active = 1',
-                    [email, librarianId]
-                );
-                if (dup.length > 0) {
-                    return res.status(409).json({ success: false, message: 'Email already in use' });
-                }
-            }
-            if (username) {
-                const [dup] = await pool.execute(
-                    'SELECT id FROM librarians WHERE username = ? AND id <> ? AND is_active = 1',
-                    [username, librarianId]
-                );
-                if (dup.length > 0) {
-                    return res.status(409).json({ success: false, message: 'Username already in use' });
-                }
-            }
-
-            const fields = [];
-            const params = [];
-            if (username) { fields.push('username = ?'); params.push(username); }
-            if (email)    { fields.push('email = ?');    params.push(email); }
-            if (phone)    { fields.push('phone = ?');    params.push(phone); }
-
-            params.push(librarianId);
-            await pool.execute(
-                `UPDATE librarians SET ${fields.join(', ')} WHERE id = ? AND is_active = 1`,
-                params
-            );
-
-            const [rows] = await pool.execute(
-                `SELECT id, username, full_name, employee_id, email, phone
-                   FROM librarians WHERE id = ?`,
-                [librarianId]
-            );
-
-            if (!rows || rows.length === 0) {
-                return res.status(404).json({ success: false, message: 'Librarian not found' });
-            }
-
-            const lib = rows[0];
-            return res.json({
-                success: true,
-                message: 'Profile updated successfully',
-                librarian: {
-                    id: lib.id,
-                    username: lib.username,
-                    fullName: lib.full_name,
-                    employeeId: lib.employee_id,
-                    email: lib.email,
-                    phone: lib.phone || 'N/A'
-                }
-            });
-        } catch (error) {
-            console.error('Update librarian profile error:', error);
-            return res.status(500).json({ success: false, message: 'Failed to update profile' });
-        }
-    }
-    
     /**
      * Librarian Login
      * POST /api/librarian/login
@@ -309,7 +229,7 @@ class LibrarianController {
             }
 
             const [rows] = await pool.execute(
-                `SELECT id, username, password, password_format, full_name, employee_id, email, phone, is_active 
+                `SELECT id, username, password, password_format, full_name, employee_id, email, phone, institution, is_active 
                  FROM librarians 
                  WHERE username = ? OR employee_id = ? OR email = ?`,
                 [username, username, username]
@@ -346,6 +266,7 @@ class LibrarianController {
                     id: librarian.id,
                     username: librarian.username,
                     employeeId: librarian.employee_id,
+                    institution: librarian.institution || null,
                     type: 'LIBRARIAN',
                     role: 'librarian'
                 },
@@ -363,7 +284,8 @@ class LibrarianController {
                     fullName: librarian.full_name,
                     employeeId: librarian.employee_id,
                     email: librarian.email,
-                    phone: librarian.phone || "N/A"
+                    phone: librarian.phone || "N/A",
+                    institution: librarian.institution || ""
                 }
             });
         } catch (error) {
@@ -486,7 +408,7 @@ class LibrarianController {
                             [request.user_id, request.book_id, borrowDate, dueDate]
                         );
                     } catch (e) {
-                        // Borrows table insertion fallback silently handled if tracked only via requests
+                        // Borrows table insertion fallback handled
                     }
                 }
             } else if (request.request_type === 'RETURN') {
@@ -513,7 +435,7 @@ class LibrarianController {
                             [request.user_id, request.book_id]
                         );
                     } catch (e) {
-                        // Borrows table update fallback
+                        // Borrows table update fallback handled
                     }
                 }
             }
@@ -527,7 +449,6 @@ class LibrarianController {
 
             await connection.commit();
 
-            // Fire-and-forget push notification post-transaction
             (async () => {
                 try {
                     const [userRows] = await pool.execute(
@@ -579,7 +500,6 @@ class LibrarianController {
             const finalReason = rejectionReason || reason || notes || 'No reason provided';
             const librarianId = req.user ? req.user.id : null;
 
-            // Join books so we can include the title in the push notification
             const [requests] = await pool.execute(
                 `SELECT br.*, b.title AS book_title
                    FROM book_requests br
@@ -604,7 +524,6 @@ class LibrarianController {
                 [finalReason, finalReason, librarianId, requestId]
             );
 
-            // Fire-and-forget push notification after successful reject
             (async () => {
                 try {
                     const [userRows] = await pool.execute(
@@ -700,21 +619,11 @@ class LibrarianController {
     /**
      * Get request history with optional filtering
      * GET /api/librarian/requests/history
-     *
-     * NOTE: LIMIT is inlined as a validated integer literal (clamped 1–1000)
-     * to avoid MySQL 8's strict prepared-statement typing which throws
-     * ER_WRONG_ARGUMENTS (errno 1210) when LIMIT is bound as a parameter
-     * alongside string parameters.
-     *
-     * FIX: Added remark_by, remark_date, and librarian full_name (remarkByName)
-     * so Android can display and enforce immutability of remarks.
      */
     static async getRequestHistory(req, res) {
         try {
             const { status, requestType, search, limit } = req.query;
 
-            // Safely parse limit and default to 200 if missing or invalid.
-            // Clamp to a hard ceiling to prevent accidental large scans.
             const parsedLimit = parseInt(limit, 10);
             let finalLimit = (!isNaN(parsedLimit) && parsedLimit > 0) ? parsedLimit : 200;
             if (finalLimit > 1000) finalLimit = 1000;
@@ -769,9 +678,6 @@ class LibrarianController {
                 params.push(term, term);
             }
 
-            // Inline LIMIT as a validated integer literal (safe — value is a
-            // JS number clamped between 1 and 1000). This avoids MySQL 8 strict
-            // prepared-statement type errors (ER_WRONG_ARGUMENTS 1210).
             query += ` ORDER BY br.request_date DESC LIMIT ${finalLimit}`;
 
             const [rows] = await pool.execute(query, params);
@@ -794,11 +700,6 @@ class LibrarianController {
     /**
      * Add remark to a request
      * POST /api/librarian/requests/:id/remark
-     *
-     * FIX: 
-     * - Enforces immutability: returns 409 Conflict if a remark already exists.
-     * - Returns requestId, remarkByName (full name), remarkDate in the payload
-     *   so the Android client can update the list item inline.
      */
     static async addRequestRemark(req, res) {
         try {
@@ -820,7 +721,6 @@ class LibrarianController {
                 });
             }
 
-            // Verify the request exists and check for an existing immutable remark
             const [existing] = await pool.execute(
                 `SELECT id, remark FROM book_requests WHERE id = ?`,
                 [requestId]
@@ -835,7 +735,6 @@ class LibrarianController {
 
             const currentRemark = existing[0].remark;
             if (currentRemark !== null && String(currentRemark).trim() !== '') {
-                // 409 Conflict — remark is final and cannot be modified
                 return res.status(409).json({
                     success: false,
                     message: 'This remark is final and cannot be modified'
@@ -849,7 +748,6 @@ class LibrarianController {
                 [String(remark).trim(), librarianId, requestId]
             );
 
-            // Fetch the librarian's full name for the response
             let librarianFullName = 'Librarian';
             if (librarianId) {
                 const [libRows] = await pool.execute(
@@ -861,8 +759,6 @@ class LibrarianController {
                 }
             }
 
-            // Fetch the authoritative remark_date back from the DB so client
-            // and server timestamps match exactly
             const [freshRows] = await pool.execute(
                 `SELECT remark, remark_date FROM book_requests WHERE id = ?`,
                 [requestId]
@@ -908,7 +804,6 @@ class LibrarianController {
                 });
             }
 
-            // Query matching employee_id, email, and either full_name OR username
             const [rows] = await pool.execute(
                 `SELECT id FROM librarians 
                  WHERE employee_id = ? 
@@ -992,12 +887,10 @@ class LibrarianController {
      */
     static async getBorrowTrends(req, res) {
         try {
-            // Clamp days between 7 and 90 for safety
             let days = parseInt(req.query.days, 10);
             if (isNaN(days) || days < 1) days = 7;
             if (days > 90) days = 90;
 
-            // 1. Borrows per day (only APPROVED borrow requests)
             const [dailyRows] = await pool.execute(`
                 SELECT 
                     DATE(request_date) AS date,
@@ -1010,7 +903,6 @@ class LibrarianController {
                 ORDER BY date ASC
             `, [days]);
 
-            // 2. Requests by type (BORROW vs RETURN vs RESERVE)
             const [typeRows] = await pool.execute(`
                 SELECT 
                     request_type AS type,
@@ -1020,7 +912,6 @@ class LibrarianController {
                 GROUP BY request_type
             `, [days]);
 
-            // 3. Top 5 most borrowed books
             const [topBooks] = await pool.execute(`
                 SELECT 
                     b.title AS title,
@@ -1036,7 +927,6 @@ class LibrarianController {
                 LIMIT 5
             `, [days]);
 
-            // 4. Status distribution
             const [statusRows] = await pool.execute(`
                 SELECT 
                     status,
@@ -1075,6 +965,111 @@ class LibrarianController {
                 success: false,
                 message: 'Failed to retrieve analytics'
             });
+        }
+    }
+
+    // --- Institution-Scoped Book Management ---
+
+    /**
+     * List books for the librarian's institution only.
+     * GET /api/librarian/books
+     */
+    static async listMyInstitutionBooks(req, res) {
+        try {
+            const institution = req.user?.institution || null;
+            const [rows] = await pool.execute(
+                `SELECT * FROM books
+                  WHERE (? IS NULL OR institution = ?)
+                  ORDER BY title LIMIT 500`,
+                [institution, institution]
+            );
+            res.json({ success: true, count: rows.length, data: rows });
+        } catch (e) {
+            console.error('List institution books error:', e);
+            res.status(500).json({ success: false, message: 'Failed to list books' });
+        }
+    }
+
+    /**
+     * Librarian uploads a new book/resource to their institution.
+     * POST /api/librarian/books
+     */
+    static async addBook(req, res) {
+        try {
+            const institution = req.user?.institution || req.body.institution || null;
+            if (!institution) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Your librarian account has no institution assigned'
+                });
+            }
+            const {
+                title, author, isbn, category, level, quantity,
+                availableQuantity, publishedYear
+            } = req.body;
+
+            if (!title || !author || quantity === undefined) {
+                return res.status(400).json({ success: false, message: 'title, author, quantity required' });
+            }
+
+            const Book = require('../models/Book');
+            const id = await Book.create({
+                title, author, isbn, category, level,
+                quantity,
+                availableQuantity: availableQuantity ?? quantity,
+                publishedYear: publishedYear ?? null,
+                institution,
+                createdBy: req.user.id
+            });
+            res.status(201).json({ success: true, message: 'Book added', bookId: id });
+        } catch (e) {
+            console.error('Librarian add book error:', e);
+            res.status(500).json({ success: false, message: 'Failed to add book' });
+        }
+    }
+
+    /**
+     * Update a book, only if it belongs to the librarian's institution.
+     * PUT /api/librarian/books/:id
+     */
+    static async updateMyInstitutionBook(req, res) {
+        try {
+            const institution = req.user?.institution || null;
+            const [rows] = await pool.execute('SELECT institution FROM books WHERE id = ?', [req.params.id]);
+            if (!rows.length) return res.status(404).json({ success: false, message: 'Book not found' });
+            if (institution && rows[0].institution && rows[0].institution !== institution) {
+                return res.status(403).json({ success: false, message: 'Not your institution' });
+            }
+
+            const Book = require('../models/Book');
+            const ok = await Book.update(req.params.id, req.body);
+            if (!ok) return res.status(400).json({ success: false, message: 'No changes' });
+            res.json({ success: true });
+        } catch (e) {
+            console.error('Update institution book error:', e);
+            res.status(500).json({ success: false, message: 'Failed to update book' });
+        }
+    }
+
+    /**
+     * Delete a book, only if it belongs to the librarian's institution.
+     * DELETE /api/librarian/books/:id
+     */
+    static async deleteMyInstitutionBook(req, res) {
+        try {
+            const institution = req.user?.institution || null;
+            const [rows] = await pool.execute('SELECT institution FROM books WHERE id = ?', [req.params.id]);
+            if (!rows.length) return res.status(404).json({ success: false, message: 'Book not found' });
+            if (institution && rows[0].institution && rows[0].institution !== institution) {
+                return res.status(403).json({ success: false, message: 'Not your institution' });
+            }
+
+            const Book = require('../models/Book');
+            await Book.deleteById(req.params.id);
+            res.json({ success: true });
+        } catch (e) {
+            console.error('Delete institution book error:', e);
+            res.status(500).json({ success: false, message: 'Failed to delete book' });
         }
     }
 }
