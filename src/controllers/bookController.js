@@ -85,13 +85,6 @@ class BookController {
                 });
             }
 
-            // ============================================================
-            // Duplicate-borrow guard (BORROW requests only)
-            // Blocks a new borrow of the same book while the student still
-            // has an unresolved borrow (PENDING/APPROVED) or an unprocessed
-            // RETURN for that book. RETURN submissions are handled by a
-            // separate endpoint and are intentionally not affected.
-            // ============================================================
             if (requestType === 'BORROW') {
                 const [activeBorrow] = await pool.execute(
                     `SELECT id, status, request_type
@@ -133,7 +126,6 @@ class BookController {
 
             const newRequestId = result.insertId;
 
-            // Notify active librarians via FCM if tokens exist
             try {
                 const [librarians] = await pool.execute(
                     "SELECT id, fcm_token FROM librarians " +
@@ -262,6 +254,26 @@ class BookController {
                 });
             }
 
+            // ============================================================
+            // NEW: enforce that a librarian has added a remark to the
+            // original borrow record before the student may request return.
+            // ============================================================
+            const [remarkCheck] = await pool.execute(
+                `SELECT remark FROM book_requests WHERE id = ?`,
+                [requestId]
+            );
+            const hasRemark = remarkCheck.length > 0
+                && remarkCheck[0].remark !== null
+                && String(remarkCheck[0].remark).trim() !== '';
+            if (!hasRemark) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'This record has no librarian remark yet. Please contact ' +
+                             'the librarian to add a remark on this borrow before ' +
+                             'requesting a return.'
+                });
+            }
+
             const [result] = await pool.execute(
                 `INSERT INTO book_requests 
                  (user_id, book_id, request_type, status, request_date, related_request_id, notes)
@@ -295,22 +307,17 @@ class BookController {
         try {
             const userId = req.params.id || req.params.userId;
             
-            console.log(`🔍 Fetching borrows for user ID: ${userId}`);
-            
             const [users] = await pool.execute(
                 'SELECT id, full_name FROM users WHERE id = ?',
                 [userId]
             );
             
             if (users.length === 0) {
-                console.log(`❌ User ${userId} not found`);
                 return res.status(404).json({
                     success: false,
                     message: 'User not found'
                 });
             }
-            
-            console.log(`✅ User found: ${users[0].full_name}`);
 
             const [rows] = await pool.execute(`
                 SELECT 
@@ -349,8 +356,6 @@ class BookController {
                 WHERE br.user_id = ?
                 ORDER BY br.request_date DESC
             `, [userId]);
-
-            console.log(`📚 Found ${rows.length} borrow requests for user ${userId}`);
 
             if (rows.length === 0) {
                 return res.json({
@@ -494,8 +499,6 @@ class BookController {
             const librarianId = req.user.id;
             const { notes = '' } = req.body;
             
-            console.log(`📌 Approving request ID: ${id} by librarian: ${librarianId}`);
-            
             await connection.beginTransaction();
             
             const [requests] = await connection.execute(
@@ -515,8 +518,6 @@ class BookController {
             }
             
             const request = requests[0];
-            console.log(`📌 Request Type: ${request.request_type}`);
-            
             let actionMessage = '';
             
             if (request.request_type === 'BORROW') {
