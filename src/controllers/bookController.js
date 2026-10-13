@@ -666,4 +666,4 @@ class BookController {
     }
 }
 
-Module.exports = BookController;
+module.exports = BookController;
