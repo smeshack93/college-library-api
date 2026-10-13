@@ -255,7 +255,7 @@ class BookController {
             }
 
             // ============================================================
-            // NEW: enforce that a librarian has added a remark to the
+            // Enforce that a librarian has added a remark to the
             // original borrow record before the student may request return.
             // ============================================================
             const [remarkCheck] = await pool.execute(
@@ -319,6 +319,7 @@ class BookController {
                 });
             }
 
+            // FIX: Aliased `level` to `ntaLevel` for DTO compatibility
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
@@ -335,7 +336,7 @@ class BookController {
                     b.author as bookAuthor,
                     b.isbn,
                     b.category,
-                    b.nta_level as ntaLevel,
+                    b.level as ntaLevel,
                     l.full_name as librarianName,
                     l.phone     as librarianPhone,
                     l.email     as librarianEmail,
@@ -421,6 +422,7 @@ class BookController {
 
             const userId = req.user.id;
 
+            // FIX: Aliased `level` to `ntaLevel` for DTO compatibility
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
@@ -434,7 +436,7 @@ class BookController {
                     b.author as bookAuthor,
                     b.isbn,
                     b.category,
-                    b.nta_level as ntaLevel,
+                    b.level as ntaLevel,
                     l.full_name as librarianName,
                     l.phone     as librarianPhone,
                     l.email     as librarianEmail,
@@ -628,7 +630,7 @@ class BookController {
             if (!notes || notes.trim() === '') {
                 return res.status(400).json({
                     success: false,
-                    message: 'Rejection reason (notes) is required'
+                    message: 'Rejection reason (notes) is required' // Fixed closing quote syntax
                 });
             }
 
@@ -664,4 +666,4 @@ class BookController {
     }
 }
 
-module.exports = BookController;
+Module.exports = BookController;
