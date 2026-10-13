@@ -55,9 +55,17 @@ router.post('/forgot-password', [
   validateRequest
 ], AuthController.forgotPassword);
 
-// Reset password — submit new password with token
+// Reset password — accepts EITHER a `token` (student/admin) OR an `employeeId` (librarian)
 router.post('/reset-password', [
-  body('token').notEmpty().withMessage('Reset token is required'),
+  body().custom((value, { req }) => {
+    const token = req.body.token;
+    const employeeId = req.body.employeeId;
+    if ((!token || String(token).trim() === '') &&
+        (!employeeId || String(employeeId).trim() === '')) {
+      throw new Error('Reset token or employeeId is required');
+    }
+    return true;
+  }),
   body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
   validateRequest
 ], AuthController.resetPassword);
