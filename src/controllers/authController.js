@@ -261,33 +261,80 @@ class AuthController {
   }
 
   /**
-   * Reset Password via Token
+   * Reset Password via Token OR Employee ID
    * POST /api/auth/reset-password
+   *
+   * Body (student/admin email flow):
+   *    { token: "<hex>", newPassword: "..." }
+   *
+   * Body (librarian in-app flow, if this route is reused):
+   *    { employeeId: "EMP123", newPassword: "..." }
    */
   static async resetPassword(req, res) {
     try {
-      const { token, newPassword } = req.body;
+      const { token, employeeId, newPassword } = req.body;
 
+      // ------------------------------------------------------------
+      // FIX: accept EITHER token (student/admin) OR employeeId
+      // (librarian). Previously only `token` was accepted, causing
+      // Android to send `employeeId` (from the ResetPasswordRequest
+      // DTO) and get a 400.
+      // ------------------------------------------------------------
+
+      // --- Librarian path: delegate to the dedicated librarian
+      //     recovery endpoint's logic via the Librarian model. ---
+      if ((!token || String(token).trim() === '') && employeeId) {
+        if (!newPassword || String(newPassword).length < 8) {
+          return res.status(400).json({
+            success: false,
+            message: 'New password must be at least 8 characters'
+          });
+        }
+
+        const lib = await Librarian.findByUsernameOrEmailOrEmployee(employeeId);
+        if (!lib) {
+          return res.status(404).json({
+            success: false,
+            message: 'Account non-existent or inactive.'
+          });
+        }
+
+        const hashed = hashPassword(newPassword);
+        const ok = await Librarian.updatePassword(lib.id, hashed);
+        if (!ok) {
+          return res.status(500).json({
+            success: false,
+            message: 'Failed to reset password.'
+          });
+        }
+
+        return res.json({
+          success: true,
+          message: 'Password reset successfully.'
+        });
+      }
+
+      // --- Student/Admin path: token-based reset (unchanged behaviour) ---
       if (!token || !newPassword) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Token and new password required' 
+        return res.status(400).json({
+          success: false,
+          message: 'Token and new password required'
         });
       }
 
       if (newPassword.length < 8) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Password must be at least 8 characters' 
+        return res.status(400).json({
+          success: false,
+          message: 'Password must be at least 8 characters'
         });
       }
 
       const user = await User.findByResetToken(token);
 
       if (!user) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Invalid or expired reset token' 
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid or expired reset token'
         });
       }
 
@@ -295,16 +342,16 @@ class AuthController {
       await User.updatePassword(user.id, hashedPassword);
       await User.clearResetToken(user.id);
 
-      res.json({ 
-        success: true, 
-        message: 'Password reset successfully.' 
+      res.json({
+        success: true,
+        message: 'Password reset successfully.'
       });
 
     } catch (error) {
       console.error('Reset password error:', error);
-      res.status(500).json({ 
-        success: false, 
-        message: 'Server error' 
+      res.status(500).json({
+        success: false,
+        message: 'Server error'
       });
     }
   }
