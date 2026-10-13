@@ -135,11 +135,6 @@ class BookController {
 
             // Notify active librarians via FCM if tokens exist
             try {
-                // ✅ FIX: use single quotes for the empty-string literal.
-                //    Double quotes are treated as a column identifier when
-                //    ANSI_QUOTES is enabled (Render MySQL default), which
-                //    produced: "Unknown column '' in 'where clause'".
-                //    Single quotes are always a string literal in every mode.
                 const [librarians] = await pool.execute(
                     "SELECT id, fcm_token FROM librarians " +
                     "WHERE is_active = 1 " +
@@ -165,7 +160,7 @@ class BookController {
                         android: {
                             priority: 'high',
                             notification: {
-                                channelId: 'library_requests', // matches CHANNEL_ID on Android
+                                channelId: 'library_requests',
                                 sound: 'default'
                             }
                         }
@@ -211,7 +206,6 @@ class BookController {
                 });
             }
 
-            // Verify the borrow request exists and belongs to this user
             const [borrowRequests] = await pool.execute(
                 `SELECT id, book_id, status, request_type 
                  FROM book_requests 
@@ -228,7 +222,6 @@ class BookController {
 
             const borrowRequest = borrowRequests[0];
 
-            // Check if this is already a borrow request (not a return)
             if (borrowRequest.request_type !== 'BORROW') {
                 return res.status(400).json({
                     success: false,
@@ -236,7 +229,6 @@ class BookController {
                 });
             }
 
-            // Check if there's already a pending return request for this book
             const [existingReturn] = await pool.execute(
                 `SELECT id FROM book_requests 
                  WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status = 'PENDING'`,
@@ -250,7 +242,6 @@ class BookController {
                 });
             }
 
-            // Check if there's already an approved return (meaning book is already returned)
             const [approvedReturn] = await pool.execute(
                 `SELECT id FROM book_requests 
                  WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status IN ('APPROVED', 'RETURNED')`,
@@ -264,7 +255,6 @@ class BookController {
                 });
             }
 
-            // Check if the borrow request is already COMPLETED
             if (borrowRequest.status === 'COMPLETED' || borrowRequest.status === 'RETURNED') {
                 return res.status(400).json({
                     success: false,
@@ -272,7 +262,6 @@ class BookController {
                 });
             }
 
-            // Create the return request with related_request_id
             const [result] = await pool.execute(
                 `INSERT INTO book_requests 
                  (user_id, book_id, request_type, status, request_date, related_request_id, notes)
@@ -308,7 +297,6 @@ class BookController {
             
             console.log(`🔍 Fetching borrows for user ID: ${userId}`);
             
-            // Check if user exists
             const [users] = await pool.execute(
                 'SELECT id, full_name FROM users WHERE id = ?',
                 [userId]
@@ -324,9 +312,6 @@ class BookController {
             
             console.log(`✅ User found: ${users[0].full_name}`);
 
-            // Get ALL borrow requests for this user (including all statuses)
-            // Include related request info to check if return was already processed or pending
-            // Include librarian remark fields so students can see them on their record
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
@@ -345,15 +330,15 @@ class BookController {
                     b.category,
                     b.nta_level as ntaLevel,
                     l.full_name as librarianName,
+                    l.phone     as librarianPhone,
+                    l.email     as librarianEmail,
                     br.remark,
                     br.remark_by,
                     br.remark_date,
                     rl.full_name as remarkByName,
-                    -- Check if there's an approved or returned request for this borrow
                     (SELECT COUNT(*) FROM book_requests 
                      WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id)) 
                        AND request_type = 'RETURN' AND status IN ('APPROVED', 'RETURNED')) as has_approved_return,
-                    -- Check if there's a pending return request for this borrow
                     (SELECT COUNT(*) FROM book_requests 
                      WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id)) 
                        AND request_type = 'RETURN' AND status = 'PENDING') as has_pending_return
@@ -367,7 +352,6 @@ class BookController {
 
             console.log(`📚 Found ${rows.length} borrow requests for user ${userId}`);
 
-            // If no requests found, return empty array
             if (rows.length === 0) {
                 return res.json({
                     success: true,
@@ -390,7 +374,9 @@ class BookController {
                 ntaLevel: row.ntaLevel || 'N/A',
                 requestType: row.requestType || 'BORROW',
                 notes: row.notes || '',
-                librarianName: row.librarianName || null,
+                librarianName:  row.librarianName  || null,
+                librarianPhone: row.librarianPhone || null,
+                librarianEmail: row.librarianEmail || null,
                 relatedRequestId: row.related_request_id || 0,
                 hasApprovedReturn: row.has_approved_return > 0,
                 hasPendingReturn: row.has_pending_return > 0,
@@ -444,12 +430,16 @@ class BookController {
                     b.isbn,
                     b.category,
                     b.nta_level as ntaLevel,
+                    l.full_name as librarianName,
+                    l.phone     as librarianPhone,
+                    l.email     as librarianEmail,
                     br.remark,
                     br.remark_by,
                     br.remark_date,
                     rl.full_name as remarkByName
                 FROM book_requests br
                 JOIN books b ON br.book_id = b.id
+                LEFT JOIN librarians l ON br.approved_by = l.id
                 LEFT JOIN librarians rl ON br.remark_by = rl.id
                 WHERE br.user_id = ?
                 ORDER BY br.request_date DESC
@@ -468,6 +458,9 @@ class BookController {
                 category: row.category || 'General',
                 ntaLevel: row.ntaLevel || 'N/A',
                 requestType: row.request_type || 'BORROW',
+                librarianName:  row.librarianName  || null,
+                librarianPhone: row.librarianPhone || null,
+                librarianEmail: row.librarianEmail || null,
                 remark: row.remark || null,
                 remarkBy: row.remark_by || null,
                 remarkByName: row.remarkByName || null,
@@ -556,7 +549,6 @@ class BookController {
                 actionMessage = 'Borrow request approved';
                 
             } else if (request.request_type === 'RETURN') {
-                // Update return request status
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'RETURNED', 
@@ -568,7 +560,6 @@ class BookController {
                     [librarianId, notes, id]
                 );
 
-                // Update original borrow record status to prevent re-triggering returns
                 if (request.related_request_id) {
                     await connection.execute(
                         `UPDATE book_requests 
