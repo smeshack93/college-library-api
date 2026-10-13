@@ -16,6 +16,7 @@ const authRoutes = require('./routes/auth');
 const bookRoutes = require('./routes/books');
 const librarianRoutes = require('./routes/librarian');
 const adminRoutes = require('./routes/admin');
+const userRoutes = require('./routes/user'); // NEW
 
 const app = express();
 
@@ -43,11 +44,11 @@ try {
 }
 
 // --- Middleware ---
-app.use(helmet()); 
-app.use(cors());   
-app.use(morgan('dev')); 
-app.use(express.json()); 
-app.use(express.urlencoded({ extended: true }));
+app.use(helmet());[cite: 15]
+app.use(cors());[cite: 15]
+app.use(morgan('dev'));[cite: 15]
+app.use(express.json());[cite: 15]
+app.use(express.urlencoded({ extended: true }));[cite: 15]
 
 // --- API Routes ---
 
@@ -76,10 +77,11 @@ app.get('/api/health', (req, res) => {
  * SINGLE ROUTE MOUNTING WITH /api PREFIX
  * Standard REST practice
  */
-app.use('/api/auth', authRoutes);           
-app.use('/api/librarian', librarianRoutes); 
-app.use('/api/admin', adminRoutes);
-app.use('/api/books', bookRoutes);         
+app.use('/api/auth', authRoutes);          [cite: 15]
+app.use('/api/librarian', librarianRoutes);[cite: 15]
+app.use('/api/admin', adminRoutes);        [cite: 15]
+app.use('/api/books', bookRoutes);          [cite: 15]
+app.use('/api/user', userRoutes);           // NEW
 
 // --- Error Handling ---
 app.use((req, res) => {
