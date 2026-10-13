@@ -57,6 +57,14 @@ class User {
     return result.affectedRows > 0;
   }
 
+  static async updateFcmToken(userId, token) {
+    const [result] = await pool.execute(
+      'UPDATE users SET fcm_token = ? WHERE id = ?',
+      [token, userId]
+    );
+    return result.affectedRows > 0;
+  }
+
   static async setResetToken(email, token, expiresAt) {
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
     const formattedExpiresAt = new Date(expiresAt).toISOString().slice(0, 19).replace('T', ' ');
