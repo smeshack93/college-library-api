@@ -570,7 +570,13 @@ class LibrarianController {
             const [[totalBooks]] = await pool.execute(`SELECT COUNT(*) AS count FROM books`);
             const [[availableBooks]] = await pool.execute(`SELECT SUM(available_quantity) AS count FROM books`);
             const [[pendingRequests]] = await pool.execute(`SELECT COUNT(*) AS count FROM book_requests WHERE status = 'PENDING'`);
-            const [[totalUsers]] = await pool.execute(`SELECT COUNT(*) AS count FROM users`);
+            // FIX: count only STUDENT rows. The `users` table also contains
+            // ADMIN accounts (role enum in schema), so filtering by role
+            // excludes admins from the "Active Students" figure — matching
+            // the admin dashboard's own definition in AdminController.getStats[cite: 20].
+            const [[totalUsers]] = await pool.execute(
+                `SELECT COUNT(*) AS count FROM users WHERE role = 'STUDENT'`
+            );
             
             let activeLibrariansCount = 0;
             try {
