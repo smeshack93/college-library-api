@@ -3,18 +3,46 @@ const Book = require('../models/Book');
 const { pool } = require('../config/database');
 const admin = require('firebase-admin');
 
+// Global institution bucket — books tagged exactly 'General' are visible
+// to every institution. No case normalization: matches the literal string.
+const GLOBAL_INSTITUTION = 'General';
+
 class BookController {
     /**
      * Get all available books
      * GET /api/books
+     *
+     * SCOPED: an authenticated caller (student or librarian) sees only
+     * books belonging to their institution (plus the global 'General'
+     * bucket). A caller with no institution sees an empty list.
+     * Unauthenticated requests also receive an empty list — the route
+     * is documented as "public" but the content is now user-specific.
      */
     static async getAllBooks(req, res) {
         try {
-            const books = await Book.findAll();
+            const institution = req.user && req.user.institution ? req.user.institution : null;
+
+            if (!institution) {
+                return res.json({
+                    success: true,
+                    count: 0,
+                    data: []
+                });
+            }
+
+            const [rows] = await pool.execute(
+                `SELECT * FROM books
+                  WHERE quantity > 0
+                    AND institution IS NOT NULL
+                    AND (institution = ? OR institution = ?)
+                  ORDER BY title`,
+                [institution, GLOBAL_INSTITUTION]
+            );
+
             res.json({
                 success: true,
-                count: books.length,
-                data: books
+                count: rows.length,
+                data: rows
             });
         } catch (error) {
             console.error('Error fetching books:', error);
@@ -57,10 +85,14 @@ class BookController {
     /**
      * Submit a request for a book (handles both BORROW and RETURN)
      * POST /api/books/request
+     *
+     * SCOPED: rejects any borrow of a book whose institution does not
+     * match the student's institution (or the global 'General' bucket).
      */
     static async requestBook(req, res) {
         try {
             const userId = req.user.id;
+            const studentInstitution = req.user && req.user.institution ? req.user.institution : null;
             const { bookId, requestType = 'BORROW' } = req.body;
 
             if (!bookId) {
@@ -75,6 +107,22 @@ class BookController {
                 return res.status(404).json({
                     success: false,
                     message: 'Book not found'
+                });
+            }
+
+            // Institution guard: the student must belong to the book's
+            // institution, unless the book is in the global 'General' bucket.
+            if (!studentInstitution) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Your account has no institution assigned'
+                });
+            }
+            const bookInst = book.institution;
+            if (!bookInst || (bookInst !== studentInstitution && bookInst !== GLOBAL_INSTITUTION)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'This book is not available for your institution'
                 });
             }
 
@@ -127,11 +175,15 @@ class BookController {
             const newRequestId = result.insertId;
 
             try {
+                // Notify librarians only of the book's institution (and the
+                // global bucket) — scoped at the query level.
                 const [librarians] = await pool.execute(
                     "SELECT id, fcm_token FROM librarians " +
                     "WHERE is_active = 1 " +
                     "AND fcm_token IS NOT NULL " +
-                    "AND fcm_token <> ''"
+                    "AND fcm_token <> '' " +
+                    "AND (institution = ? OR institution = ?)",
+                    [bookInst, GLOBAL_INSTITUTION]
                 );
 
                 const tokens = librarians.map(l => l.fcm_token).filter(Boolean);
@@ -185,16 +237,45 @@ class BookController {
     /**
      * Request to return a borrowed book
      * POST /api/books/return
+     *
+     * SCOPED: same institution guard on the underlying book — the
+     * student must belong to the book's institution (or the global bucket).
      */
     static async requestReturn(req, res) {
         try {
             const userId = req.user.id;
+            const studentInstitution = req.user && req.user.institution ? req.user.institution : null;
             const { bookId, requestId } = req.body;
 
             if (!bookId || !requestId) {
                 return res.status(400).json({
                     success: false,
                     message: 'bookId and requestId are required'
+                });
+            }
+
+            // Check the book's institution before touching request state.
+            const [bookRows] = await pool.execute(
+                `SELECT id, institution FROM books WHERE id = ?`,
+                [bookId]
+            );
+            if (!bookRows.length) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Book not found'
+                });
+            }
+            const bookInst = bookRows[0].institution;
+            if (!studentInstitution) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Your account has no institution assigned'
+                });
+            }
+            if (!bookInst || (bookInst !== studentInstitution && bookInst !== GLOBAL_INSTITUTION)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'This book is not available for your institution'
                 });
             }
 
@@ -254,10 +335,8 @@ class BookController {
                 });
             }
 
-            // ============================================================
             // Enforce that a librarian has added a remark to the
             // original borrow record before the student may request return.
-            // ============================================================
             const [remarkCheck] = await pool.execute(
                 `SELECT remark FROM book_requests WHERE id = ?`,
                 [requestId]
@@ -319,7 +398,6 @@ class BookController {
                 });
             }
 
-            // FIX: Aliased `level` to `ntaLevel` for DTO compatibility
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
@@ -422,7 +500,6 @@ class BookController {
 
             const userId = req.user.id;
 
-            // FIX: Aliased `level` to `ntaLevel` for DTO compatibility
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id as requestId,
@@ -556,7 +633,7 @@ class BookController {
                     `UPDATE book_requests 
                      SET status = 'RETURNED', 
                          approved_by = ?, 
-                         approval_date = NOW(),
+                     approval_date = NOW(),
                          return_date = NOW(),
                          notes = ?
                      WHERE id = ?`,
@@ -630,7 +707,7 @@ class BookController {
             if (!notes || notes.trim() === '') {
                 return res.status(400).json({
                     success: false,
-                    message: 'Rejection reason (notes) is required' // Fixed closing quote syntax
+                    message: 'Rejection reason (notes) is required'
                 });
             }
 
