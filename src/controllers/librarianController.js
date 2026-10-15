@@ -4,6 +4,10 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 
+// Global institution bucket — books tagged exactly 'General' are visible
+// to every institution. No case normalization: matches the literal string.
+const GLOBAL_INSTITUTION = 'General';
+
 // Initialize Firebase Admin Messaging instance (safe fallback if firebase-admin initialized globally)
 let messaging = null;
 try {
@@ -300,9 +304,26 @@ class LibrarianController {
     /**
      * Get pending requests for approval/rejection
      * GET /api/librarian/requests/pending
+     *
+     * SCOPED: Only returns requests for books belonging to the
+     * librarian's institution (or the global 'General' bucket).
+     * Librarians with no institution see an empty list.
      */
     static async getPendingRequests(req, res) {
         try {
+            const institution = req.user && req.user.institution ? req.user.institution : null;
+
+            // A librarian with no institution sees nothing. Prevents
+            // accidental cross-institution exposure for misconfigured accounts.
+            if (!institution) {
+                return res.json({
+                    success: true,
+                    count: 0,
+                    requests: [],
+                    data: []
+                });
+            }
+
             const [rows] = await pool.execute(`
                 SELECT 
                     br.id,
@@ -323,8 +344,10 @@ class LibrarianController {
                 JOIN users u ON br.user_id = u.id
                 JOIN books b ON br.book_id = b.id
                 WHERE br.status = 'PENDING'
+                  AND b.institution IS NOT NULL
+                  AND (b.institution = ? OR b.institution = ?)
                 ORDER BY br.request_date ASC
-            `);
+            `, [institution, GLOBAL_INSTITUTION]);
 
             res.json({
                 success: true,
@@ -344,6 +367,9 @@ class LibrarianController {
     /**
      * Approve book borrow or return request
      * POST /api/librarian/requests/:id/approve
+     *
+     * SCOPED: The institution guard below prevents a librarian from
+     * approving requests whose book belongs to another institution.
      */
     static async approveRequest(req, res) {
         const connection = await pool.getConnection();
@@ -352,9 +378,10 @@ class LibrarianController {
 
             const requestId = req.params.id;
             const librarianId = req.user ? req.user.id : null;
+            const institution = req.user && req.user.institution ? req.user.institution : null;
 
             const [requests] = await connection.execute(
-                `SELECT br.*, b.title AS book_title 
+                `SELECT br.*, b.title AS book_title, b.institution AS book_institution
                  FROM book_requests br 
                  JOIN books b ON br.book_id = b.id 
                  WHERE br.id = ? AND br.status = 'PENDING'`,
@@ -370,6 +397,25 @@ class LibrarianController {
             }
 
             const request = requests[0];
+
+            // Institution guard: the librarian must belong to the same
+            // institution as the book, unless the book is in the global
+            // 'General' bucket. A librarian with no institution cannot approve.
+            if (!institution) {
+                await connection.rollback();
+                return res.status(403).json({
+                    success: false,
+                    message: 'Your account has no institution assigned'
+                });
+            }
+            const bookInst = request.book_institution;
+            if (!bookInst || (bookInst !== institution && bookInst !== GLOBAL_INSTITUTION)) {
+                await connection.rollback();
+                return res.status(403).json({
+                    success: false,
+                    message: 'This request is for a book outside your institution'
+                });
+            }
 
             if (request.request_type === 'BORROW') {
                 const [books] = await connection.execute(
@@ -492,6 +538,8 @@ class LibrarianController {
     /**
      * Reject request with reason
      * POST /api/librarian/requests/:id/reject
+     *
+     * SCOPED: same institution guard as approveRequest.
      */
     static async rejectRequest(req, res) {
         try {
@@ -499,9 +547,10 @@ class LibrarianController {
             const { rejectionReason, reason, notes } = req.body;
             const finalReason = rejectionReason || reason || notes || 'No reason provided';
             const librarianId = req.user ? req.user.id : null;
+            const institution = req.user && req.user.institution ? req.user.institution : null;
 
             const [requests] = await pool.execute(
-                `SELECT br.*, b.title AS book_title
+                `SELECT br.*, b.title AS book_title, b.institution AS book_institution
                    FROM book_requests br
                    JOIN books b ON br.book_id = b.id
                   WHERE br.id = ? AND br.status = 'PENDING'`,
@@ -516,6 +565,21 @@ class LibrarianController {
             }
 
             const request = requests[0];
+
+            // Institution guard
+            if (!institution) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Your account has no institution assigned'
+                });
+            }
+            const bookInst = request.book_institution;
+            if (!bookInst || (bookInst !== institution && bookInst !== GLOBAL_INSTITUTION)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'This request is for a book outside your institution'
+                });
+            }
 
             await pool.execute(
                 `UPDATE book_requests 
@@ -564,31 +628,86 @@ class LibrarianController {
     /**
      * Get dashboard summary statistics
      * GET /api/librarian/statistics
+     *
+     * SCOPED: every count is restricted to the librarian's institution
+     * (plus the global 'General' bucket for books). Librarian with no
+     * institution gets zeros.
      */
     static async getStatistics(req, res) {
         try {
-            const [[totalBooks]] = await pool.execute(`SELECT COUNT(*) AS count FROM books`);
-            const [[availableBooks]] = await pool.execute(`SELECT SUM(available_quantity) AS count FROM books`);
-            const [[pendingRequests]] = await pool.execute(`SELECT COUNT(*) AS count FROM book_requests WHERE status = 'PENDING'`);
-            // FIX: count only STUDENT rows. The `users` table also contains
-            // ADMIN accounts (role enum in schema), so filtering by role
-            // excludes admins from the "Active Students" figure — matching
-            // the admin dashboard's own definition in AdminController.getStats[cite: 20].
-            const [[totalUsers]] = await pool.execute(
-                `SELECT COUNT(*) AS count FROM users WHERE role = 'STUDENT'`
+            const institution = req.user && req.user.institution ? req.user.institution : null;
+
+            // Zero-shape response for a librarian with no institution.
+            if (!institution) {
+                const empty = {
+                    activeUsers: 0, active_users: 0,
+                    activeLibrarians: 0, active_librarians: 0,
+                    totalBooks: 0, total_books: 0,
+                    availableBooks: 0, available_books: 0,
+                    pendingRequests: 0, pending_requests: 0,
+                    activeBorrows: 0
+                };
+                return res.json({ success: true, statistics: empty, data: empty });
+            }
+
+            // Books scoped to librarian's institution OR the global bucket.
+            const [[totalBooks]] = await pool.execute(
+                `SELECT COUNT(*) AS count FROM books
+                  WHERE institution IS NOT NULL
+                    AND (institution = ? OR institution = ?)`,
+                [institution, GLOBAL_INSTITUTION]
             );
-            
+            const [[availableBooks]] = await pool.execute(
+                `SELECT SUM(available_quantity) AS count FROM books
+                  WHERE institution IS NOT NULL
+                    AND (institution = ? OR institution = ?)`,
+                [institution, GLOBAL_INSTITUTION]
+            );
+
+            // Pending requests scoped via JOIN to books.
+            const [[pendingRequests]] = await pool.execute(
+                `SELECT COUNT(*) AS count
+                   FROM book_requests br
+                   JOIN books b ON br.book_id = b.id
+                  WHERE br.status = 'PENDING'
+                    AND b.institution IS NOT NULL
+                    AND (b.institution = ? OR b.institution = ?)`,
+                [institution, GLOBAL_INSTITUTION]
+            );
+
+            // Students scoped to librarian's institution. Null institution
+            // students are excluded (they belong to no visible institution).
+            const [[totalUsers]] = await pool.execute(
+                `SELECT COUNT(*) AS count FROM users
+                  WHERE role = 'STUDENT'
+                    AND institution = ?`,
+                [institution]
+            );
+
             let activeLibrariansCount = 0;
             try {
-                const [[librarians]] = await pool.execute(`SELECT COUNT(*) AS count FROM librarians WHERE is_active = 1`);
+                const [[librarians]] = await pool.execute(
+                    `SELECT COUNT(*) AS count FROM librarians
+                      WHERE is_active = 1 AND institution = ?`,
+                    [institution]
+                );
                 activeLibrariansCount = librarians ? librarians.count : 0;
             } catch (e) {
-                activeLibrariansCount = 1;
+                activeLibrariansCount = 0;
             }
 
             let activeBorrowsCount = 0;
             try {
-                const [[borrows]] = await pool.execute(`SELECT COUNT(*) AS count FROM book_requests WHERE status = 'APPROVED' AND request_type = 'BORROW'`);
+                const [[borrows]] = await pool.execute(
+                    `SELECT COUNT(*) AS count
+                       FROM book_requests br
+                       JOIN books b ON br.book_id = b.id
+                      WHERE br.status = 'APPROVED'
+                        AND br.request_type = 'BORROW'
+                        AND b.institution IS NOT NULL
+                        AND (b.institution = ? OR b.institution = ?)`,
+                    [institution, GLOBAL_INSTITUTION]
+                );
                 activeBorrowsCount = borrows ? borrows.count : 0;
             } catch (e) {
                 activeBorrowsCount = 0;
@@ -625,10 +744,19 @@ class LibrarianController {
     /**
      * Get request history with optional filtering
      * GET /api/librarian/requests/history
+     *
+     * SCOPED: only requests for books in the librarian's institution
+     * (or the global 'General' bucket).
      */
     static async getRequestHistory(req, res) {
         try {
             const { status, requestType, search, limit } = req.query;
+            const institution = req.user && req.user.institution ? req.user.institution : null;
+
+            // Zero-shape response for a librarian with no institution.
+            if (!institution) {
+                return res.json({ success: true, count: 0, history: [], data: [] });
+            }
 
             const parsedLimit = parseInt(limit, 10);
             let finalLimit = (!isNaN(parsedLimit) && parsedLimit > 0) ? parsedLimit : 200;
@@ -663,10 +791,11 @@ class LibrarianController {
                 JOIN books b ON br.book_id = b.id
                 LEFT JOIN librarians rl ON br.remark_by = rl.id
                 LEFT JOIN librarians pl ON br.approved_by = pl.id
-                WHERE 1=1
+                WHERE b.institution IS NOT NULL
+                  AND (b.institution = ? OR b.institution = ?)
             `;
 
-            const params = [];
+            const params = [institution, GLOBAL_INSTITUTION];
 
             if (status && status !== 'ALL') {
                 query += ` AND br.status = ?`;
@@ -890,33 +1019,58 @@ class LibrarianController {
     /**
      * Get borrow trend analytics for charts
      * GET /api/librarian/analytics/trends?days=7
+     *
+     * SCOPED: every sub-query restricted to the librarian's institution
+     * (plus the global 'General' bucket).
      */
     static async getBorrowTrends(req, res) {
         try {
+            const institution = req.user && req.user.institution ? req.user.institution : null;
+
             let days = parseInt(req.query.days, 10);
             if (isNaN(days) || days < 1) days = 7;
             if (days > 90) days = 90;
 
+            // Zero-shape response for a librarian with no institution.
+            if (!institution) {
+                return res.json({
+                    success: true,
+                    data: {
+                        days,
+                        dailyBorrows: [],
+                        byType: [],
+                        topBooks: [],
+                        byStatus: []
+                    }
+                });
+            }
+
             const [dailyRows] = await pool.execute(`
                 SELECT 
-                    DATE(request_date) AS date,
+                    DATE(br.request_date) AS date,
                     COUNT(*) AS count
-                FROM book_requests
-                WHERE request_type = 'BORROW'
-                  AND status IN ('APPROVED', 'COMPLETED', 'RETURNED')
-                  AND request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-                GROUP BY DATE(request_date)
+                FROM book_requests br
+                JOIN books b ON br.book_id = b.id
+                WHERE br.request_type = 'BORROW'
+                  AND br.status IN ('APPROVED', 'COMPLETED', 'RETURNED')
+                  AND br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                  AND b.institution IS NOT NULL
+                  AND (b.institution = ? OR b.institution = ?)
+                GROUP BY DATE(br.request_date)
                 ORDER BY date ASC
-            `, [days]);
+            `, [days, institution, GLOBAL_INSTITUTION]);
 
             const [typeRows] = await pool.execute(`
                 SELECT 
-                    request_type AS type,
+                    br.request_type AS type,
                     COUNT(*) AS count
-                FROM book_requests
-                WHERE request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-                GROUP BY request_type
-            `, [days]);
+                FROM book_requests br
+                JOIN books b ON br.book_id = b.id
+                WHERE br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                  AND b.institution IS NOT NULL
+                  AND (b.institution = ? OR b.institution = ?)
+                GROUP BY br.request_type
+            `, [days, institution, GLOBAL_INSTITUTION]);
 
             const [topBooks] = await pool.execute(`
                 SELECT 
@@ -928,19 +1082,24 @@ class LibrarianController {
                 WHERE br.request_type = 'BORROW'
                   AND br.status IN ('APPROVED', 'COMPLETED', 'RETURNED')
                   AND br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                  AND b.institution IS NOT NULL
+                  AND (b.institution = ? OR b.institution = ?)
                 GROUP BY b.id, b.title, b.author
                 ORDER BY count DESC
                 LIMIT 5
-            `, [days]);
+            `, [days, institution, GLOBAL_INSTITUTION]);
 
             const [statusRows] = await pool.execute(`
                 SELECT 
-                    status,
+                    br.status,
                     COUNT(*) AS count
-                FROM book_requests
-                WHERE request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-                GROUP BY status
-            `, [days]);
+                FROM book_requests br
+                JOIN books b ON br.book_id = b.id
+                WHERE br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                  AND b.institution IS NOT NULL
+                  AND (b.institution = ? OR b.institution = ?)
+                GROUP BY br.status
+            `, [days, institution, GLOBAL_INSTITUTION]);
 
             res.json({
                 success: true,
