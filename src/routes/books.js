@@ -2,12 +2,18 @@
 const express = require('express');
 const router = express.Router();
 const BookController = require('../controllers/bookController');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth');
 
 // ==========================================
 // Public Routes
 // ==========================================
-router.get('/', BookController.getAllBooks);
+
+// FIX: attach optionalAuthMiddleware so an authenticated caller
+// (student or librarian) is recognised on GET /api/books. Without
+// this, req.user is undefined and the scoped getAllBooks returns an
+// empty list to everyone. Unauthenticated callers also still get a
+// valid (empty) response rather than a 401.
+router.get('/', optionalAuthMiddleware, BookController.getAllBooks);
 
 // ==========================================
 // Protected Routes (Require Login)
