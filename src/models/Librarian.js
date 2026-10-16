@@ -79,6 +79,24 @@ class Librarian {
         return r.affectedRows > 0;
     }
 
+    // ====== Single-session enforcement ======
+
+    static async setCurrentSession(librarianId, sessionId) {
+        const [r] = await pool.execute(
+            'UPDATE librarians SET current_session_id = ? WHERE id = ?',
+            [sessionId, librarianId]
+        );
+        return r.affectedRows > 0;
+    }
+
+    static async clearCurrentSession(librarianId) {
+        const [r] = await pool.execute(
+            'UPDATE librarians SET current_session_id = NULL WHERE id = ?',
+            [librarianId]
+        );
+        return r.affectedRows > 0;
+    }
+
     static async getDashboardStats(institution = null) {
         const instFilter = institution ? ' AND institution = ?' : '';
         const p = institution ? [institution] : [];
