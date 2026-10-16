@@ -7,6 +7,14 @@ const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
+/**
+ * Generates a cryptographically random session id.
+ * Stored on the users/librarians row so a newer login can revoke older ones.
+ */
+function newSessionId() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
 class AuthController {
 
   /**
@@ -35,6 +43,12 @@ class AuthController {
           return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
         const role = (user.role || 'STUDENT').toUpperCase();
+
+        // Single-session: generate a new session id and store it on the row.
+        // This invalidates any previously issued token for this user.
+        const sid = newSessionId();
+        await User.setCurrentSession(user.id, sid);
+
         const token = jwt.sign(
           { 
             id: user.id, 
@@ -42,7 +56,8 @@ class AuthController {
             username: user.username,
             role, 
             type: role, 
-            institution: user.institution || user.college || null 
+            institution: user.institution || user.college || null,
+            sid
           },
           JWT_SECRET,
           { expiresIn: '7d' }
@@ -79,6 +94,11 @@ class AuthController {
         if (!ok) {
           return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
+
+        // Single-session for librarian row too.
+        const sid = newSessionId();
+        await Librarian.setCurrentSession(librarian.id, sid);
+
         const token = jwt.sign(
           { 
             id: librarian.id, 
@@ -86,7 +106,8 @@ class AuthController {
             employeeId: librarian.employee_id, 
             type: 'LIBRARIAN',
             role: 'LIBRARIAN', 
-            institution: librarian.institution || null 
+            institution: librarian.institution || null,
+            sid
           },
           JWT_SECRET,
           { expiresIn: '24h' }
@@ -124,7 +145,6 @@ class AuthController {
     try {
       const { username, email, fullName, password, level, ntaLevel, phone, college, institution } = req.body;
 
-      // Support both 'level' and 'ntaLevel' keys seamlessly
       const userLevel = level || ntaLevel;
       const userInstitution = institution || college;
 
@@ -214,7 +234,6 @@ class AuthController {
         });
       }
 
-      // Librarian path (manual reset via identity verification)
       if ((role || '').toUpperCase() === 'LIBRARIAN') {
         return res.json({
           success: true,
@@ -225,7 +244,6 @@ class AuthController {
       const user = await User.findByEmail(email);
 
       if (!user) {
-        // Do not leak user existence
         return res.json({ 
           success: true, 
           message: 'If that email exists, a reset link has been sent.' 
@@ -263,26 +281,12 @@ class AuthController {
   /**
    * Reset Password via Token OR Employee ID
    * POST /api/auth/reset-password
-   *
-   * Body (student/admin email flow):
-   *    { token: "<hex>", newPassword: "..." }
-   *
-   * Body (librarian in-app flow, if this route is reused):
-   *    { employeeId: "EMP123", newPassword: "..." }
    */
   static async resetPassword(req, res) {
     try {
       const { token, employeeId, newPassword } = req.body;
 
-      // ------------------------------------------------------------
-      // FIX: accept EITHER token (student/admin) OR employeeId
-      // (librarian). Previously only `token` was accepted, causing
-      // Android to send `employeeId` (from the ResetPasswordRequest
-      // DTO) and get a 400.
-      // ------------------------------------------------------------
-
-      // --- Librarian path: delegate to the dedicated librarian
-      //     recovery endpoint's logic via the Librarian model. ---
+      // --- Librarian path (employeeId) ---
       if ((!token || String(token).trim() === '') && employeeId) {
         if (!newPassword || String(newPassword).length < 8) {
           return res.status(400).json({
@@ -308,13 +312,16 @@ class AuthController {
           });
         }
 
+        // Password reset revokes the current session.
+        await Librarian.clearCurrentSession(lib.id);
+
         return res.json({
           success: true,
           message: 'Password reset successfully.'
         });
       }
 
-      // --- Student/Admin path: token-based reset (unchanged behaviour) ---
+      // --- Student/Admin path (token) ---
       if (!token || !newPassword) {
         return res.status(400).json({
           success: false,
@@ -341,6 +348,7 @@ class AuthController {
       const hashedPassword = hashPassword(newPassword);
       await User.updatePassword(user.id, hashedPassword);
       await User.clearResetToken(user.id);
+      await User.clearCurrentSession(user.id);
 
       res.json({
         success: true,
@@ -416,8 +424,10 @@ class AuthController {
 
       if (isLibrarian) {
         await Librarian.updatePassword(account.id, hashedPassword);
+        await Librarian.clearCurrentSession(account.id);
       } else {
         await User.updatePassword(account.id, hashedPassword);
+        await User.clearCurrentSession(account.id);
       }
 
       return res.json({
