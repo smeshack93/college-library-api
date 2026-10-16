@@ -94,6 +94,26 @@ class User {
     return result.affectedRows > 0;
   }
 
+  // ====== Single-session enforcement ======
+
+  /** Stores the currently valid session id for this user. */
+  static async setCurrentSession(userId, sessionId) {
+    const [r] = await pool.execute(
+      'UPDATE users SET current_session_id = ? WHERE id = ?',
+      [sessionId, userId]
+    );
+    return r.affectedRows > 0;
+  }
+
+  /** Clears the session id (used on logout, password change, password reset). */
+  static async clearCurrentSession(userId) {
+    const [r] = await pool.execute(
+      'UPDATE users SET current_session_id = NULL WHERE id = ?',
+      [userId]
+    );
+    return r.affectedRows > 0;
+  }
+
   // ====== Admin operations ======
   static async listAll({ role = null, institution = null, search = null } = {}) {
     let q = `SELECT id, username, email, full_name, level, phone, institution, role, is_active, created_at
