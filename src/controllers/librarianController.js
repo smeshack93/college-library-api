@@ -263,6 +263,13 @@ class LibrarianController {
                 });
             }
 
+            // Single-session: generate a new session id and store it on the row.
+            const sid = crypto.randomBytes(32).toString('hex');
+            await pool.execute(
+                'UPDATE librarians SET current_session_id = ? WHERE id = ?',
+                [sid, librarian.id]
+            );
+
             const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
             const token = jwt.sign(
@@ -272,7 +279,8 @@ class LibrarianController {
                     employeeId: librarian.employee_id,
                     institution: librarian.institution || null,
                     type: 'LIBRARIAN',
-                    role: 'librarian'
+                    role: 'librarian',
+                    sid
                 },
                 JWT_SECRET,
                 { expiresIn: '24h' }
@@ -1001,6 +1009,12 @@ class LibrarianController {
             await pool.execute(
                 `UPDATE librarians SET password = ?, password_format = 'BCRYPT' WHERE id = ?`,
                 [passwordHash, rows[0].id]
+            );
+
+            // Password reset revokes the current session.
+            await pool.execute(
+                'UPDATE librarians SET current_session_id = NULL WHERE id = ?',
+                [rows[0].id]
             );
 
             res.json({
