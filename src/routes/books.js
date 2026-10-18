@@ -5,19 +5,11 @@ const BookController = require('../controllers/bookController');
 const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth');
 
 // ==========================================
-// Public Routes
-// ==========================================
-
-// FIX: attach optionalAuthMiddleware so an authenticated caller
-// (student or librarian) is recognised on GET /api/books. Without
-// this, req.user is undefined and the scoped getAllBooks returns an
-// empty list to everyone. Unauthenticated callers also still get a
-// valid (empty) response rather than a 401.
-router.get('/', optionalAuthMiddleware, BookController.getAllBooks);
-
-// ==========================================
 // Protected Routes (Require Login)
 // ==========================================
+
+// Public read of the catalogue now requires login.
+router.get('/', authMiddleware, BookController.getAllBooks);
 
 // Specific POST action endpoints
 router.post('/request', authMiddleware, BookController.requestBook);
@@ -33,9 +25,11 @@ router.get('/users/:id/borrows', authMiddleware, BookController.getUserBorrows);
 router.get('/user/:id/borrows', authMiddleware, BookController.getUserBorrows);
 
 // ==========================================
-// Parameterized Catch-All Public Routes
+// Parameterized Catch-All Protected Routes
 // (MUST remain at the bottom to prevent route collisions)
 // ==========================================
-router.get('/:id', BookController.getBookById);
+
+// Single-book read now requires login.
+router.get('/:id', authMiddleware, BookController.getBookById);
 
 module.exports = router;
