@@ -7,34 +7,24 @@ const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
-/**
- * Generates a cryptographically random session id.
- * Stored on the users/librarians row so a newer login can revoke older ones.
- */
 function newSessionId() {
   return crypto.randomBytes(32).toString('hex');
 }
 
 class AuthController {
 
-  /**
-   * Unified login for STUDENT / LIBRARIAN / ADMIN.
-   * POST /api/auth/login
-   * Body: { identifier, password } OR { email, password }
-   */
   static async login(req, res) {
     try {
       const identifier = (req.body.identifier || req.body.email || req.body.username || '').trim();
       const { password } = req.body;
 
       if (!identifier || !password) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Identifier and password required' 
+        return res.status(400).json({
+          success: false,
+          message: 'Identifier and password required'
         });
       }
 
-      // 1. Try users table (STUDENT or ADMIN)
       let user = await User.findByEmail(identifier);
       if (!user) user = await User.findByUsername(identifier);
 
@@ -43,19 +33,16 @@ class AuthController {
           return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
         const role = (user.role || 'STUDENT').toUpperCase();
-
-        // Single-session: generate a new session id and store it on the row.
-        // This invalidates any previously issued token for this user.
         const sid = newSessionId();
         await User.setCurrentSession(user.id, sid);
 
         const token = jwt.sign(
-          { 
-            id: user.id, 
-            email: user.email, 
+          {
+            id: user.id,
+            email: user.email,
             username: user.username,
-            role, 
-            type: role, 
+            role,
+            type: role,
             institution: user.institution || user.college || null,
             sid
           },
@@ -81,7 +68,6 @@ class AuthController {
         });
       }
 
-      // 2. Try librarians table
       const librarian = await Librarian.findByUsernameOrEmailOrEmployee(identifier);
       if (librarian) {
         const stored = librarian.password;
@@ -95,17 +81,16 @@ class AuthController {
           return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
 
-        // Single-session for librarian row too.
         const sid = newSessionId();
         await Librarian.setCurrentSession(librarian.id, sid);
 
         const token = jwt.sign(
-          { 
-            id: librarian.id, 
+          {
+            id: librarian.id,
             username: librarian.username,
-            employeeId: librarian.employee_id, 
+            employeeId: librarian.employee_id,
             type: 'LIBRARIAN',
-            role: 'LIBRARIAN', 
+            role: 'LIBRARIAN',
             institution: librarian.institution || null,
             sid
           },
@@ -137,10 +122,6 @@ class AuthController {
     }
   }
 
-  /**
-   * Student Registration
-   * POST /api/auth/register
-   */
   static async register(req, res) {
     try {
       const { username, email, fullName, password, level, ntaLevel, phone, college, institution } = req.body;
@@ -149,36 +130,36 @@ class AuthController {
       const userInstitution = institution || college;
 
       if (!username || !email || !fullName || !password || !userLevel) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'All required fields must be filled' 
+        return res.status(400).json({
+          success: false,
+          message: 'All required fields must be filled'
         });
       }
 
       const allowedLevels = [
-        'NTA Level 4', 'NTA Level 5', 'NTA Level 6', 
+        'NTA Level 4', 'NTA Level 5', 'NTA Level 6',
         'NVA', 'Secretarial', 'Degree', 'Masters', 'PhD', 'Others'
       ];
-      
+
       if (!allowedLevels.includes(userLevel)) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Invalid Education Level' 
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid Education Level'
         });
       }
 
       if (password.length < 8) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Password must be at least 8 characters' 
+        return res.status(400).json({
+          success: false,
+          message: 'Password must be at least 8 characters'
         });
       }
 
       const existingUser = await User.findByEmail(email);
       if (existingUser) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Email already registered' 
+        return res.status(400).json({
+          success: false,
+          message: 'Email already registered'
         });
       }
 
@@ -196,41 +177,37 @@ class AuthController {
         role: 'STUDENT'
       });
 
-      res.status(201).json({ 
-        success: true, 
+      res.status(201).json({
+        success: true,
         message: 'User registered successfully',
-        userId 
+        userId
       });
-      
+
     } catch (error) {
       console.error('Registration Error:', error);
-      
+
       if (error.code === 'ER_DUP_ENTRY') {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Username or email already exists' 
+        return res.status(400).json({
+          success: false,
+          message: 'Username or email already exists'
         });
       }
-      
-      res.status(500).json({ 
-        success: false, 
-        message: 'Registration failed' 
+
+      res.status(500).json({
+        success: false,
+        message: 'Registration failed'
       });
     }
   }
 
-  /**
-   * Request Forgot Password Email
-   * POST /api/auth/forgot-password
-   */
   static async forgotPassword(req, res) {
     try {
       const { email, role } = req.body;
 
       if (!email) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Email is required' 
+        return res.status(400).json({
+          success: false,
+          message: 'Email is required'
         });
       }
 
@@ -244,9 +221,9 @@ class AuthController {
       const user = await User.findByEmail(email);
 
       if (!user) {
-        return res.json({ 
-          success: true, 
-          message: 'If that email exists, a reset link has been sent.' 
+        return res.json({
+          success: true,
+          message: 'If that email exists, a reset link has been sent.'
         });
       }
 
@@ -264,29 +241,24 @@ class AuthController {
         console.error('Email send failed:', mailErr);
       }
 
-      res.json({ 
-        success: true, 
-        message: 'If that email exists, a reset link has been sent.' 
+      res.json({
+        success: true,
+        message: 'If that email exists, a reset link has been sent.'
       });
 
     } catch (error) {
       console.error('Forgot password error:', error);
-      res.status(500).json({ 
-        success: false, 
-        message: 'Server error' 
+      res.status(500).json({
+        success: false,
+        message: 'Server error'
       });
     }
   }
 
-  /**
-   * Reset Password via Token OR Employee ID
-   * POST /api/auth/reset-password
-   */
   static async resetPassword(req, res) {
     try {
       const { token, employeeId, newPassword } = req.body;
 
-      // --- Librarian path (employeeId) ---
       if ((!token || String(token).trim() === '') && employeeId) {
         if (!newPassword || String(newPassword).length < 8) {
           return res.status(400).json({
@@ -312,7 +284,6 @@ class AuthController {
           });
         }
 
-        // Password reset revokes the current session.
         await Librarian.clearCurrentSession(lib.id);
 
         return res.json({
@@ -321,7 +292,6 @@ class AuthController {
         });
       }
 
-      // --- Student/Admin path (token) ---
       if (!token || !newPassword) {
         return res.status(400).json({
           success: false,
@@ -364,14 +334,10 @@ class AuthController {
     }
   }
 
-  /**
-   * Universal Change Password Endpoint (Handles both Students and Librarians)
-   * POST /api/auth/change-password
-   */
   static async changePassword(req, res) {
     try {
       const { userId, currentPassword, newPassword } = req.body;
-      
+
       const activeUserId = req.user?.id || userId;
       const accountType = (req.user?.type || req.body.userType || req.body.type || '').toUpperCase();
 
@@ -439,6 +405,43 @@ class AuthController {
       return res.status(500).json({
         success: false,
         message: 'Server error'
+      });
+    }
+  }
+
+  /**
+   * Server-side logout.
+   * POST /api/auth/logout
+   *
+   * Clears current_session_id for the caller so the token they just
+   * used becomes invalid immediately on the server, regardless of the
+   * JWT expiry window. Requires a valid JWT — optionalAuthMiddleware
+   * populates req.user when a token is present, and if it isn't we
+   * respond successfully (idempotent logout).
+   */
+  static async logout(req, res) {
+    try {
+      const payload = req.user;
+      if (!payload || !payload.id) {
+        // No active session — nothing to clear. Return success so that
+        // clients can always call logout unconditionally.
+        return res.json({ success: true, message: 'Logged out.' });
+      }
+
+      const role = String(payload.type || payload.role || '').toUpperCase();
+
+      if (role === 'LIBRARIAN') {
+        await Librarian.clearCurrentSession(payload.id);
+      } else {
+        await User.clearCurrentSession(payload.id);
+      }
+
+      return res.json({ success: true, message: 'Logged out.' });
+    } catch (error) {
+      console.error('Logout error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to log out.'
       });
     }
   }
