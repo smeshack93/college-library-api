@@ -3,1292 +3,20 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
-
-// Global institution bucket — books tagged exactly 'General' are visible
-// to every institution. No case normalization: matches the literal string.
-const GLOBAL_INSTITUTION = 'General';
-
-// Initialize Firebase Admin Messaging instance (safe fallback if firebase-admin initialized globally)
-let messaging = null;
-try {
-    messaging = admin.messaging();
-} catch (e) {
-    // Messaging will be initialized when admin app is configured
-}
-
-/**
- * Helper to send push notifications using Firebase Cloud Messaging HTTP v1 API.
- *
- * type values (must match MyFirebaseMessagingService on Android):
- *   REQUEST_APPROVED | REQUEST_REJECTED | RETURN_APPROVED | RETURN_REJECTED
- */
-async function sendRequestStatusNotification(userId, deviceToken, requestId, bookTitle, type) {
-    if (!messaging) {
-        try {
-            messaging = admin.messaging();
-        } catch (e) {
-            console.warn('Firebase Admin messaging is not initialized. Skipping push notification.');
-            return false;
-        }
-    }
-
-    // Human-readable title/body depending on outcome type
-    let title, body;
-    switch (type) {
-        case 'REQUEST_APPROVED':
-            title = 'Request Approved';
-            body  = `Your request for "${bookTitle}" has been approved!`;
-            break;
-        case 'REQUEST_REJECTED':
-            title = 'Request Rejected';
-            body  = `Your request for "${bookTitle}" has been rejected.`;
-            break;
-        case 'RETURN_APPROVED':
-            title = 'Return Approved';
-            body  = `Your return of "${bookTitle}" has been approved.`;
-            break;
-        case 'RETURN_REJECTED':
-            title = 'Return Rejected';
-            body  = `Your return of "${bookTitle}" has been rejected.`;
-            break;
-        default:
-            title = 'Library Update';
-            body  = `There is an update on your request for "${bookTitle}".`;
-    }
-
-    const message = {
-        token: deviceToken,
-        notification: { title, body },
-        data: {
-            type,
-            requestId: String(requestId),
-            title,
-            body
-        },
-        android: {
-            priority: 'high',
-            notification: {
-                channelId: 'library_requests',
-                sound: 'default'
-            }
-        }
-    };
-
-    try {
-        const response = await messaging.send(message);
-        console.log('Successfully sent push notification:', response);
-        return true;
-    } catch (error) {
-        console.error('Error sending push notification:', error);
-
-        if (
-            error.code === 'messaging/registration-token-not-registered' ||
-            error.code === 'messaging/invalid-registration-token'
-        ) {
-            try {
-                await pool.execute('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
-                console.log(`Removed invalid FCM token for user ID: ${userId}`);
-            } catch (dbErr) {
-                console.error('Failed to remove invalid FCM token from database:', dbErr);
-            }
-        }
-        return false;
-    }
-}
-
-/**
- * Helper function to verify PBKDF2 hashes stored in format:
- * PBKDF2:iterations:saltBase64:hashBase64
- */
-function verifyPbkdf2Password(password, storedHash) {
-    try {
-        const parts = storedHash.split(':');
-        if (parts.length !== 4 || parts[0] !== 'PBKDF2') {
-            return false;
-        }
-
-        const iterations = parseInt(parts[1], 10);
-        const salt = Buffer.from(parts[2], 'base64');
-        const originalHash = Buffer.from(parts[3], 'base64');
-
-        const keylen = originalHash.length;
-
-        const derivedHash = crypto.pbkdf2Sync(
-            password,
-            salt,
-            iterations,
-            keylen,
-            'sha256'
-        );
-
-        return crypto.timingSafeEqual(originalHash, derivedHash);
-    } catch (err) {
-        console.error('PBKDF2 Verification Error:', err);
-        return false;
-    }
-}
-
-/**
- * Helper function to verify passwords regardless of format (BCRYPT or PBKDF2)
- */
-async function verifyPassword(inputPassword, librarian) {
-    const storedHash = librarian.password;
-
-    if (!storedHash) return false;
-
-    if (storedHash.startsWith('PBKDF2:') || librarian.password_format === 'PBKDF2') {
-        return verifyPbkdf2Password(inputPassword, storedHash);
-    }
-
-    return await bcrypt.compare(inputPassword, storedHash);
-}
-
-class LibrarianController {
-
-    /**
-     * Update FCM Token for librarian
-     * POST /api/librarian/fcm-token
-     */
-    static async updateFcmToken(req, res) {
-        try {
-            const { token } = req.body;
-            if (!token) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'Token required' 
-                });
-            }
-
-            const librarianId = req.user.id;
-            await pool.execute(
-                'UPDATE librarians SET fcm_token = ? WHERE id = ?',
-                [token, librarianId]
-            );
-
-            res.json({ success: true });
-        } catch (error) {
-            console.error('Update FCM token error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to update FCM token'
-            });
-        }
-    }
-
-    /**
-     * Get logged-in Librarian profile details
-     * GET /api/librarian/profile
-     */
-    static async getProfile(req, res) {
-        try {
-            const librarianId = req.user.id;
-            const [rows] = await pool.execute(
-               `SELECT id, username, full_name, employee_id, email, phone, institution 
-                 FROM librarians 
-                 WHERE id = ? AND is_active = 1`,
-                [librarianId]
-            );
-
-            if (!rows || rows.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Librarian not found'
-                });
-            }
-
-            res.json({
-                success: true,
-                librarian: {
-                    id: rows[0].id,
-                    username: rows[0].username,
-                    fullName: rows[0].full_name,
-                    employeeId: rows[0].employee_id,
-                    email: rows[0].email,
-                    phone: rows[0].phone || "N/A",
-                    institution: rows[0].institution || ""
-                }
-            });
-        } catch (error) {
-            console.error('Get librarian profile error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to retrieve profile information'
-            });
-        }
-    }
-
-    /**
-     * Librarian Login
-     * POST /api/librarian/login
-     */
-    static async login(req, res) {
-        try {
-            const { username, password } = req.body;
-
-            if (!username || !password) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Username and password are required'
-                });
-            }
-
-            const [rows] = await pool.execute(
-                `SELECT id, username, password, password_format, full_name, employee_id, email, phone, institution, is_active 
-                 FROM librarians 
-                 WHERE username = ? OR employee_id = ? OR email = ?`,
-                [username, username, username]
-            );
-
-            if (!rows || !Array.isArray(rows) || rows.length === 0) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Invalid librarian credentials'
-                });
-            }
-
-            const librarian = rows[0];
-
-            if (!librarian.is_active) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'Account is inactive. Contact system administrator.'
-                });
-            }
-
-            const isMatch = await verifyPassword(password, librarian);
-            if (!isMatch) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Invalid librarian credentials'
-                });
-            }
-
-            // Single-session: generate a new session id and store it on the row.
-            const sid = crypto.randomBytes(32).toString('hex');
-            await pool.execute(
-                'UPDATE librarians SET current_session_id = ? WHERE id = ?',
-                [sid, librarian.id]
-            );
-
-            const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
-
-            const token = jwt.sign(
-                {
-                    id: librarian.id,
-                    username: librarian.username,
-                    employeeId: librarian.employee_id,
-                    institution: librarian.institution || null,
-                    type: 'LIBRARIAN',
-                    role: 'librarian',
-                    sid
-                },
-                JWT_SECRET,
-                { expiresIn: '24h' }
-            );
-
-            res.json({
-                success: true,
-                message: 'Librarian authentication successful',
-                token,
-                librarian: {
-                    id: librarian.id,
-                    username: librarian.username,
-                    fullName: librarian.full_name,
-                    employeeId: librarian.employee_id,
-                    email: librarian.email,
-                    phone: librarian.phone || "N/A",
-                    institution: librarian.institution || ""
-                }
-            });
-        } catch (error) {
-            console.error('Librarian login error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Internal server error during authentication'
-            });
-        }
-    }
-
-    /**
-     * Get pending requests for approval/rejection
-     * GET /api/librarian/requests/pending
-     *
-     * SCOPED: Only returns requests for books belonging to the
-     * librarian's institution (or the global 'General' bucket).
-     * Librarians with no institution see an empty list.
-     */
-    static async getPendingRequests(req, res) {
-        try {
-            const institution = req.user && req.user.institution ? req.user.institution : null;
-
-            // A librarian with no institution sees nothing. Prevents
-            // accidental cross-institution exposure for misconfigured accounts.
-            if (!institution) {
-                return res.json({
-                    success: true,
-                    count: 0,
-                    requests: [],
-                    data: []
-                });
-            }
-
-            const [rows] = await pool.execute(`
-                SELECT 
-                    br.id,
-                    br.user_id AS userId,
-                    u.full_name AS userName,
-                    u.email AS userEmail,
-                    u.level AS userNtaLevel,
-                    br.book_id AS bookId,
-                    b.title AS bookTitle,
-                    b.author AS bookAuthor,
-                    b.isbn AS bookIsbn,
-                    br.request_type AS requestType,
-                    br.status,
-                    br.request_date AS requestDate,
-                    br.notes,
-                    br.remark AS remarks
-                FROM book_requests br
-                JOIN users u ON br.user_id = u.id
-                JOIN books b ON br.book_id = b.id
-                WHERE br.status = 'PENDING'
-                  AND b.institution IS NOT NULL
-                  AND (b.institution = ? OR b.institution = ?)
-                ORDER BY br.request_date ASC
-            `, [institution, GLOBAL_INSTITUTION]);
-
-            res.json({
-                success: true,
-                count: rows ? rows.length : 0,
-                requests: rows || [],
-                data: rows || []
-            });
-        } catch (error) {
-            console.error('Get pending requests error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to retrieve pending requests'
-            });
-        }
-    }
-
-    /**
-     * Approve book borrow or return request
-     * POST /api/librarian/requests/:id/approve
-     *
-     * SCOPED: The institution guard below prevents a librarian from
-     * approving requests whose book belongs to another institution.
-     */
-    static async approveRequest(req, res) {
-        const connection = await pool.getConnection();
-        try {
-            await connection.beginTransaction();
-
-            const requestId = req.params.id;
-            const librarianId = req.user ? req.user.id : null;
-            const institution = req.user && req.user.institution ? req.user.institution : null;
-
-            const [requests] = await connection.execute(
-                `SELECT br.*, b.title AS book_title, b.institution AS book_institution
-                 FROM book_requests br 
-                 JOIN books b ON br.book_id = b.id 
-                 WHERE br.id = ? AND br.status = 'PENDING'`,
-                [requestId]
-            );
-
-            if (!requests || requests.length === 0) {
-                await connection.rollback();
-                return res.status(404).json({
-                    success: false,
-                    message: 'Pending request not found'
-                });
-            }
-
-            const request = requests[0];
-
-            // Institution guard: the librarian must belong to the same
-            // institution as the book, unless the book is in the global
-            // 'General' bucket. A librarian with no institution cannot approve.
-            if (!institution) {
-                await connection.rollback();
-                return res.status(403).json({
-                    success: false,
-                    message: 'Your account has no institution assigned'
-                });
-            }
-            const bookInst = request.book_institution;
-            if (!bookInst || (bookInst !== institution && bookInst !== GLOBAL_INSTITUTION)) {
-                await connection.rollback();
-                return res.status(403).json({
-                    success: false,
-                    message: 'This request is for a book outside your institution'
-                });
-            }
-
-            if (request.request_type === 'BORROW') {
-                const [books] = await connection.execute(
-                    `SELECT available_quantity FROM books WHERE id = ? FOR UPDATE`,
-                    [request.book_id]
-                );
-
-                if (!books || books.length === 0 || books[0].available_quantity <= 0) {
-                    await connection.rollback();
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Book is currently out of stock'
-                    });
-                }
-
-                await connection.execute(
-                    `UPDATE books SET available_quantity = available_quantity - 1 WHERE id = ?`,
-                    [request.book_id]
-                );
-
-                const borrowDate = new Date();
-                const dueDate = new Date();
-                dueDate.setDate(dueDate.getDate() + 14);
-
-                try {
-                    await connection.execute(
-                        `INSERT INTO borrows (user_id, book_id, borrow_date, due_date, status, created_at)
-                         VALUES (?, ?, ?, ?, 'BORROWED', NOW())`,
-                        [request.user_id, request.book_id, borrowDate, dueDate]
-                    );
-                } catch (err) {
-                    try {
-                        await connection.execute(
-                            `INSERT INTO user_borrows (user_id, book_id, borrow_date, due_date, status, created_at)
-                             VALUES (?, ?, ?, ?, 'BORROWED', NOW())`,
-                            [request.user_id, request.book_id, borrowDate, dueDate]
-                        );
-                    } catch (e) {
-                        // Borrows table insertion fallback handled
-                    }
-                }
-            } else if (request.request_type === 'RETURN') {
-                await connection.execute(
-                    `UPDATE books SET available_quantity = available_quantity + 1 WHERE id = ?`,
-                    [request.book_id]
-                );
-
-                try {
-                    await connection.execute(
-                        `UPDATE borrows 
-                         SET status = 'RETURNED', return_date = NOW() 
-                         WHERE user_id = ? AND book_id = ? AND status = 'BORROWED'
-                         ORDER BY borrow_date ASC LIMIT 1`,
-                        [request.user_id, request.book_id]
-                    );
-                } catch (err) {
-                    try {
-                        await connection.execute(
-                            `UPDATE user_borrows 
-                             SET status = 'RETURNED', return_date = NOW() 
-                             WHERE user_id = ? AND book_id = ? AND status = 'BORROWED'
-                             ORDER BY borrow_date ASC LIMIT 1`,
-                            [request.user_id, request.book_id]
-                        );
-                    } catch (e) {
-                        // Borrows table update fallback handled
-                    }
-                }
-            }
-
-            await connection.execute(
-                `UPDATE book_requests 
-                 SET status = 'APPROVED', approved_by = ?, approval_date = NOW() 
-                 WHERE id = ?`,
-                [librarianId, requestId]
-            );
-
-            await connection.commit();
-
-            (async () => {
-                try {
-                    const [userRows] = await pool.execute(
-                        'SELECT fcm_token FROM users WHERE id = ?',
-                        [request.user_id]
-                    );
-                    if (userRows && userRows.length > 0 && userRows[0].fcm_token) {
-                        const type = request.request_type === 'RETURN'
-                            ? 'RETURN_APPROVED'
-                            : 'REQUEST_APPROVED';
-
-                        await sendRequestStatusNotification(
-                            request.user_id,
-                            userRows[0].fcm_token,
-                            requestId,
-                            request.book_title || 'Requested Book',
-                            type
-                        );
-                    }
-                } catch (notifErr) {
-                    console.error('Failed to trigger approval notification:', notifErr);
-                }
-            })();
-
-            res.json({
-                success: true,
-                message: `Request successfully approved (${request.request_type})`
-            });
-        } catch (error) {
-            await connection.rollback();
-            console.error('Approve request error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to approve request'
-            });
-        } finally {
-            connection.release();
-        }
-    }
-
-    /**
-     * Reject request with reason
-     * POST /api/librarian/requests/:id/reject
-     *
-     * SCOPED: same institution guard as approveRequest.
-     */
-    static async rejectRequest(req, res) {
-        try {
-            const requestId = req.params.id;
-            const { rejectionReason, reason, notes } = req.body;
-            const finalReason = rejectionReason || reason || notes || 'No reason provided';
-            const librarianId = req.user ? req.user.id : null;
-            const institution = req.user && req.user.institution ? req.user.institution : null;
-
-            const [requests] = await pool.execute(
-                `SELECT br.*, b.title AS book_title, b.institution AS book_institution
-                   FROM book_requests br
-                   JOIN books b ON br.book_id = b.id
-                  WHERE br.id = ? AND br.status = 'PENDING'`,
-                [requestId]
-            );
-
-            if (!requests || requests.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Pending request not found'
-                });
-            }
-
-            const request = requests[0];
-
-            // Institution guard
-            if (!institution) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'Your account has no institution assigned'
-                });
-            }
-            const bookInst = request.book_institution;
-            if (!bookInst || (bookInst !== institution && bookInst !== GLOBAL_INSTITUTION)) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'This request is for a book outside your institution'
-                });
-            }
-
-            await pool.execute(
-                `UPDATE book_requests 
-                 SET status = 'REJECTED', notes = ?, remark = ?, remark_by = ?, remark_date = NOW() 
-                 WHERE id = ?`,
-                [finalReason, finalReason, librarianId, requestId]
-            );
-
-            (async () => {
-                try {
-                    const [userRows] = await pool.execute(
-                        'SELECT fcm_token FROM users WHERE id = ?',
-                        [request.user_id]
-                    );
-                    if (userRows && userRows.length > 0 && userRows[0].fcm_token) {
-                        const type = request.request_type === 'RETURN'
-                            ? 'RETURN_REJECTED'
-                            : 'REQUEST_REJECTED';
-
-                        await sendRequestStatusNotification(
-                            request.user_id,
-                            userRows[0].fcm_token,
-                            requestId,
-                            request.book_title || 'Requested Book',
-                            type
-                        );
-                    }
-                } catch (notifErr) {
-                    console.error('Failed to trigger rejection notification:', notifErr);
-                }
-            })();
-
-            res.json({
-                success: true,
-                message: 'Request successfully rejected'
-            });
-        } catch (error) {
-            console.error('Reject request error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to reject request'
-            });
-        }
-    }
-
-    /**
-     * Get dashboard summary statistics
-     * GET /api/librarian/statistics
-     *
-     * SCOPED: every count is restricted to the librarian's institution
-     * (plus the global 'General' bucket for books). Librarian with no
-     * institution gets zeros.
-     */
-    static async getStatistics(req, res) {
-        try {
-            const institution = req.user && req.user.institution ? req.user.institution : null;
-
-            // Zero-shape response for a librarian with no institution.
-            if (!institution) {
-                const empty = {
-                    activeUsers: 0, active_users: 0,
-                    activeLibrarians: 0, active_librarians: 0,
-                    totalBooks: 0, total_books: 0,
-                    availableBooks: 0, available_books: 0,
-                    pendingRequests: 0, pending_requests: 0,
-                    activeBorrows: 0
-                };
-                return res.json({ success: true, statistics: empty, data: empty });
-            }
-
-            // Books scoped to librarian's institution OR the global bucket.
-            const [[totalBooks]] = await pool.execute(
-                `SELECT COUNT(*) AS count FROM books
-                  WHERE institution IS NOT NULL
-                    AND (institution = ? OR institution = ?)`,
-                [institution, GLOBAL_INSTITUTION]
-            );
-            const [[availableBooks]] = await pool.execute(
-                `SELECT SUM(available_quantity) AS count FROM books
-                  WHERE institution IS NOT NULL
-                    AND (institution = ? OR institution = ?)`,
-                [institution, GLOBAL_INSTITUTION]
-            );
-
-            // Pending requests scoped via JOIN to books.
-            const [[pendingRequests]] = await pool.execute(
-                `SELECT COUNT(*) AS count
-                   FROM book_requests br
-                   JOIN books b ON br.book_id = b.id
-                  WHERE br.status = 'PENDING'
-                    AND b.institution IS NOT NULL
-                    AND (b.institution = ? OR b.institution = ?)`,
-                [institution, GLOBAL_INSTITUTION]
-            );
-
-            // Students scoped to librarian's institution. Null institution
-            // students are excluded (they belong to no visible institution).
-            const [[totalUsers]] = await pool.execute(
-                `SELECT COUNT(*) AS count FROM users
-                  WHERE role = 'STUDENT'
-                    AND institution = ?`,
-                [institution]
-            );
-
-            let activeLibrariansCount = 0;
-            try {
-                const [[librarians]] = await pool.execute(
-                    `SELECT COUNT(*) AS count FROM librarians
-                      WHERE is_active = 1 AND institution = ?`,
-                    [institution]
-                );
-                activeLibrariansCount = librarians ? librarians.count : 0;
-            } catch (e) {
-                activeLibrariansCount = 0;
-            }
-
-            let activeBorrowsCount = 0;
-            try {
-                const [[borrows]] = await pool.execute(
-                    `SELECT COUNT(*) AS count
-                       FROM book_requests br
-                       JOIN books b ON br.book_id = b.id
-                      WHERE br.status = 'APPROVED'
-                        AND br.request_type = 'BORROW'
-                        AND b.institution IS NOT NULL
-                        AND (b.institution = ? OR b.institution = ?)`,
-                    [institution, GLOBAL_INSTITUTION]
-                );
-                activeBorrowsCount = borrows ? borrows.count : 0;
-            } catch (e) {
-                activeBorrowsCount = 0;
-            }
-
-            const statsData = {
-                activeUsers: totalUsers ? totalUsers.count : 0,
-                active_users: totalUsers ? totalUsers.count : 0,
-                activeLibrarians: activeLibrariansCount,
-                active_librarians: activeLibrariansCount,
-                totalBooks: totalBooks ? totalBooks.count : 0,
-                total_books: totalBooks ? totalBooks.count : 0,
-                availableBooks: availableBooks && availableBooks.count !== null ? Number(availableBooks.count) : 0,
-                available_books: availableBooks && availableBooks.count !== null ? Number(availableBooks.count) : 0,
-                pendingRequests: pendingRequests ? pendingRequests.count : 0,
-                pending_requests: pendingRequests ? pendingRequests.count : 0,
-                activeBorrows: activeBorrowsCount
-            };
-
-            res.json({
-                success: true,
-                statistics: statsData,
-                data: statsData
-            });
-        } catch (error) {
-            console.error('Get statistics error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to retrieve dashboard statistics'
-            });
-        }
-    }
-
-    /**
-     * Get request history with optional filtering
-     * GET /api/librarian/requests/history
-     *
-     * SCOPED: only requests for books in the librarian's institution
-     * (or the global 'General' bucket).
-     */
-    static async getRequestHistory(req, res) {
-        try {
-            const { status, requestType, search, limit } = req.query;
-            const institution = req.user && req.user.institution ? req.user.institution : null;
-
-            // Zero-shape response for a librarian with no institution.
-            if (!institution) {
-                return res.json({ success: true, count: 0, history: [], data: [] });
-            }
-
-            const parsedLimit = parseInt(limit, 10);
-            let finalLimit = (!isNaN(parsedLimit) && parsedLimit > 0) ? parsedLimit : 200;
-            if (finalLimit > 1000) finalLimit = 1000;
-
-            let query = `
-                SELECT 
-                    br.id,
-                    br.user_id AS userId,
-                    u.full_name AS userName,
-                    u.email AS userEmail,
-                    u.level AS userNtaLevel,
-                    br.book_id AS bookId,
-                    b.title AS bookTitle,
-                    b.author AS bookAuthor,
-                    b.isbn AS bookIsbn,
-                    br.request_type AS requestType,
-                    br.status,
-                    br.notes,
-                    br.remark,
-                    br.remark_by AS remarkBy,
-                    br.remark_date AS remarkDate,
-                    rl.full_name AS remarkByName,
-                    br.request_date AS requestDate,
-                    br.approval_date AS approvalDate,
-                    br.borrow_date AS borrowDate,
-                    br.due_date AS dueDate,
-                    br.return_date AS returnDate,
-                    pl.full_name AS librarianName
-                FROM book_requests br
-                JOIN users u ON br.user_id = u.id
-                JOIN books b ON br.book_id = b.id
-                LEFT JOIN librarians rl ON br.remark_by = rl.id
-                LEFT JOIN librarians pl ON br.approved_by = pl.id
-                WHERE b.institution IS NOT NULL
-                  AND (b.institution = ? OR b.institution = ?)
-            `;
-
-            const params = [institution, GLOBAL_INSTITUTION];
-
-            if (status && status !== 'ALL') {
-                query += ` AND br.status = ?`;
-                params.push(String(status).toUpperCase());
-            }
-
-            if (requestType && requestType !== 'ALL') {
-                query += ` AND br.request_type = ?`;
-                params.push(String(requestType).toUpperCase());
-            }
-
-            if (search && String(search).trim() !== '') {
-                const term = `%${String(search).trim()}%`;
-                query += ` AND (u.full_name LIKE ? OR b.title LIKE ?)`;
-                params.push(term, term);
-            }
-
-            query += ` ORDER BY br.request_date DESC LIMIT ${finalLimit}`;
-
-            const [rows] = await pool.execute(query, params);
-
-            res.json({
-                success: true,
-                count: rows ? rows.length : 0,
-                history: rows || [],
-                data: rows || []
-            });
-        } catch (error) {
-            console.error('Get request history error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to retrieve request history'
-            });
-        }
-    }
-
-    /**
-     * Add remark to a request
-     * POST /api/librarian/requests/:id/remark
-     */
-    static async addRequestRemark(req, res) {
-        try {
-            const requestId = req.params.id;
-            const { remark } = req.body;
-            const librarianId = req.user ? req.user.id : null;
-
-            if (!remark || String(remark).trim() === '') {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Remark content is required'
-                });
-            }
-
-            if (String(remark).length > 1000) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Remark must be 1000 characters or fewer'
-                });
-            }
-
-            const [existing] = await pool.execute(
-                `SELECT id, remark FROM book_requests WHERE id = ?`,
-                [requestId]
-            );
-
-            if (!existing || existing.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Request not found'
-                });
-            }
-
-            const currentRemark = existing[0].remark;
-            if (currentRemark !== null && String(currentRemark).trim() !== '') {
-                return res.status(409).json({
-                    success: false,
-                    message: 'This remark is final and cannot be modified'
-                });
-            }
-
-            await pool.execute(
-                `UPDATE book_requests 
-                 SET remark = ?, remark_by = ?, remark_date = NOW() 
-                 WHERE id = ?`,
-                [String(remark).trim(), librarianId, requestId]
-            );
-
-            let librarianFullName = 'Librarian';
-            if (librarianId) {
-                const [libRows] = await pool.execute(
-                    `SELECT full_name, username FROM librarians WHERE id = ?`,
-                    [librarianId]
-                );
-                if (libRows && libRows.length > 0) {
-                    librarianFullName = libRows[0].full_name || libRows[0].username || 'Librarian';
-                }
-            }
-
-            const [freshRows] = await pool.execute(
-                `SELECT remark, remark_date FROM book_requests WHERE id = ?`,
-                [requestId]
-            );
-            const freshRemark = freshRows && freshRows[0] ? freshRows[0].remark : String(remark).trim();
-            const freshRemarkDate = freshRows && freshRows[0] && freshRows[0].remark_date
-                ? freshRows[0].remark_date
-                : new Date().toISOString();
-
-            res.json({
-                success: true,
-                message: 'Remark added successfully',
-                data: {
-                    requestId: parseInt(requestId, 10),
-                    remark: freshRemark,
-                    remarkByName: librarianFullName,
-                    remarkDate: freshRemarkDate
-                }
-            });
-        } catch (error) {
-            console.error('Add remark error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to add remark'
-            });
-        }
-    }
-
-    /**
-     * Verify Librarian Identity for Password Reset
-     * POST /api/librarian/verify-identity
-     */
-    static async verifyIdentity(req, res) {
-        try {
-            const employeeId = req.body.employeeId || req.body.employee_id || null;
-            const fullName = req.body.fullName || req.body.full_name || req.body.username || null;
-            const email = req.body.email || null;
-
-            if (!employeeId || !fullName || !email) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Employee ID, Full Name, and Email are required.'
-                });
-            }
-
-            const [rows] = await pool.execute(
-                `SELECT id FROM librarians 
-                 WHERE employee_id = ? 
-                   AND email = ? 
-                   AND (full_name = ? OR username = ?) 
-                   AND is_active = 1`,
-                [employeeId, email, fullName, fullName]
-            );
-
-            if (!rows || rows.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'No matching active librarian account found with these details.'
-                });
-            }
-
-            res.json({
-                success: true,
-                message: 'Identity verified successfully.'
-            });
-        } catch (error) {
-            console.error('Verify identity error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to verify identity.'
-            });
-        }
-    }
-
-    /**
-     * Reset Librarian Password
-     * POST /api/librarian/reset-password
-     */
-    static async resetPassword(req, res) {
-        try {
-            const { username, employeeId, newPassword } = req.body;
-
-            if (!newPassword || newPassword.length < 8) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'New password must be at least 8 characters long.'
-                });
-            }
-
-            const [rows] = await pool.execute(
-                `SELECT id FROM librarians WHERE username = ? AND employee_id = ? AND is_active = 1`,
-                [username, employeeId]
-            );
-
-            if (!rows || rows.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Account non-existent or inactive.'
-                });
-            }
-
-            const salt = await bcrypt.genSalt(10);
-            const passwordHash = await bcrypt.hash(newPassword, salt);
-
-            await pool.execute(
-                `UPDATE librarians SET password = ?, password_format = 'BCRYPT' WHERE id = ?`,
-                [passwordHash, rows[0].id]
-            );
-
-            // Password reset revokes the current session.
-            await pool.execute(
-                'UPDATE librarians SET current_session_id = NULL WHERE id = ?',
-                [rows[0].id]
-            );
-
-            res.json({
-                success: true,
-                message: 'Password reset successfully. You can now login.'
-            });
-        } catch (error) {
-            console.error('Reset password error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to reset password.'
-            });
-        }
-    }
-
-    /**
-     * Get borrow trend analytics for charts
-     * GET /api/librarian/analytics/trends?days=7
-     *
-     * SCOPED: every sub-query restricted to the librarian's institution
-     * (plus the global 'General' bucket).
-     */
-    static async getBorrowTrends(req, res) {
-        try {
-            const institution = req.user && req.user.institution ? req.user.institution : null;
-
-            let days = parseInt(req.query.days, 10);
-            if (isNaN(days) || days < 1) days = 7;
-            if (days > 90) days = 90;
-
-            // Zero-shape response for a librarian with no institution.
-            if (!institution) {
-                return res.json({
-                    success: true,
-                    data: {
-                        days,
-                        dailyBorrows: [],
-                        byType: [],
-                        topBooks: [],
-                        byStatus: []
-                    }
-                });
-            }
-
-            const [dailyRows] = await pool.execute(`
-                SELECT 
-                    DATE(br.request_date) AS date,
-                    COUNT(*) AS count
-                FROM book_requests br
-                JOIN books b ON br.book_id = b.id
-                WHERE br.request_type = 'BORROW'
-                  AND br.status IN ('APPROVED', 'COMPLETED', 'RETURNED')
-                  AND br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-                  AND b.institution IS NOT NULL
-                  AND (b.institution = ? OR b.institution = ?)
-                GROUP BY DATE(br.request_date)
-                ORDER BY date ASC
-            `, [days, institution, GLOBAL_INSTITUTION]);
-
-            const [typeRows] = await pool.execute(`
-                SELECT 
-                    br.request_type AS type,
-                    COUNT(*) AS count
-                FROM book_requests br
-                JOIN books b ON br.book_id = b.id
-                WHERE br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-                  AND b.institution IS NOT NULL
-                  AND (b.institution = ? OR b.institution = ?)
-                GROUP BY br.request_type
-            `, [days, institution, GLOBAL_INSTITUTION]);
-
-            const [topBooks] = await pool.execute(`
-                SELECT 
-                    b.title AS title,
-                    b.author AS author,
-                    COUNT(*) AS count
-                FROM book_requests br
-                JOIN books b ON br.book_id = b.id
-                WHERE br.request_type = 'BORROW'
-                  AND br.status IN ('APPROVED', 'COMPLETED', 'RETURNED')
-                  AND br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-                  AND b.institution IS NOT NULL
-                  AND (b.institution = ? OR b.institution = ?)
-                GROUP BY b.id, b.title, b.author
-                ORDER BY count DESC
-                LIMIT 5
-            `, [days, institution, GLOBAL_INSTITUTION]);
-
-            const [statusRows] = await pool.execute(`
-                SELECT 
-                    br.status,
-                    COUNT(*) AS count
-                FROM book_requests br
-                JOIN books b ON br.book_id = b.id
-                WHERE br.request_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-                  AND b.institution IS NOT NULL
-                  AND (b.institution = ? OR b.institution = ?)
-                GROUP BY br.status
-            `, [days, institution, GLOBAL_INSTITUTION]);
-
-            res.json({
-                success: true,
-                data: {
-                    days,
-                    dailyBorrows: dailyRows.map(r => ({
-                        date: r.date,
-                        count: Number(r.count)
-                    })),
-                    byType: typeRows.map(r => ({
-                        type: r.type,
-                        count: Number(r.count)
-                    })),
-                    topBooks: topBooks.map(r => ({
-                        title: r.title,
-                        author: r.author,
-                        count: Number(r.count)
-                    })),
-                    byStatus: statusRows.map(r => ({
-                        status: r.status,
-                        count: Number(r.count)
-                    }))
-                }
-            });
-        } catch (error) {
-            console.error('Get borrow trends error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to retrieve analytics'
-            });
-        }
-    }
-
-    // --- Institution-Scoped Book Management ---
-
-    /**
-     * List books for the librarian's institution only.
-     * GET /api/librarian/books
-     */
-    static async listMyInstitutionBooks(req, res) {
-        try {
-            const institution = req.user?.institution || null;
-            const [rows] = await pool.execute(
-                `SELECT * FROM books
-                  WHERE (? IS NULL OR institution = ?)
-                  ORDER BY title LIMIT 500`,
-                [institution, institution]
-            );
-            res.json({ success: true, count: rows.length, data: rows });
-        } catch (e) {
-            console.error('List institution books error:', e);
-            res.status(500).json({ success: false, message: 'Failed to list books' });
-        }
-    }
-
-    /**
-     * Librarian uploads a new book/resource to their institution.
-     * POST /api/librarian/books
-     */
-    static async addBook(req, res) {
-        try {
-            const institution = req.user?.institution || req.body.institution || null;
-            if (!institution) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Your librarian account has no institution assigned'
-                });
-            }
-            const {
-                title, author, isbn, category, level, quantity,
-                availableQuantity, publishedYear
-            } = req.body;
-
-            if (!title || !author || quantity === undefined) {
-                return res.status(400).json({ success: false, message: 'title, author, quantity required' });
-            }
-
-            const Book = require('../models/Book');
-            const id = await Book.create({
-                title, author, isbn, category, level,
-                quantity,
-                availableQuantity: availableQuantity ?? quantity,
-                publishedYear: publishedYear ?? null,
-                institution,
-                createdBy: req.user.id
-            });
-            res.status(201).json({ success: true, message: 'Book added', bookId: id });
-        } catch (e) {
-            console.error('Librarian add book error:', e);
-            res.status(500).json({ success: false, message: 'Failed to add book' });
-        }
-    }
-
-    /**
-     * Update a book, only if it belongs to the librarian's institution.
-     * PUT /api/librarian/books/:id
-     */
-    static async updateMyInstitutionBook(req, res) {
-        try {
-            const institution = req.user?.institution || null;
-            const [rows] = await pool.execute('SELECT institution FROM books WHERE id = ?', [req.params.id]);
-            if (!rows.length) return res.status(404).json({ success: false, message: 'Book not found' });
-            if (institution && rows[0].institution && rows[0].institution !== institution) {
-                return res.status(403).json({ success: false, message: 'Not your institution' });
-            }
-
-            const Book = require('../models/Book');
-            const ok = await Book.update(req.params.id, req.body);
-            if (!ok) return res.status(400).json({ success: false, message: 'No changes' });
-            res.json({ success: true });
-        } catch (e) {
-            console.error('Update institution book error:', e);
-            res.status(500).json({ success: false, message: 'Failed to update book' });
-        }
-    }
-
-    /**
-     * Delete a book, only if it belongs to the librarian's institution.
-     * DELETE /api/librarian/books/:id
-     */
-    static async deleteMyInstitutionBook(req, res) {
-        try {
-            const institution = req.user?.institution || null;
-            const [rows] = await pool.execute('SELECT institution FROM books WHERE id = ?', [req.params.id]);
-            if (!rows.length) return res.status(404).json({ success: false, message: 'Book not found' });
-            if (institution && rows[0].institution && rows[0].institution !== institution) {
-                return res.status(403).json({ success: false, message: 'Not your institution' });
-            }
-
-            const Book = require('../models/Book');
-            await Book.deleteById(req.params.id);
-            res.json({ success: true });
-        } catch (e) {
-            console.error('Delete institution book error:', e);
-            res.status(500).json({ success: false, message: 'Failed to delete book' });
-        }
-    }
-}
-
-module.exports = LibrarianController;const { pool } = require('../config/database');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-const admin = require('firebase-admin');
 const LoginLockout = require('../utils/loginLockout');
 
-// Global institution bucket — books tagged exactly 'General' are visible
-// to every institution. No case normalization: matches the literal string.
 const GLOBAL_INSTITUTION = 'General';
 
-// Initialize Firebase Admin Messaging instance (safe fallback if firebase-admin initialized globally)
 let messaging = null;
 try {
     messaging = admin.messaging();
-} catch (e) {
-    // Messaging will be initialized when admin app is configured
-}
+} catch (e) { }
 
-/**
- * Helper to send push notifications using Firebase Cloud Messaging HTTP v1 API.
- *
- * type values (must match MyFirebaseMessagingService on Android):
- *   REQUEST_APPROVED | REQUEST_REJECTED | RETURN_APPROVED | RETURN_REJECTED
- */
 async function sendRequestStatusNotification(userId, deviceToken, requestId, bookTitle, type) {
     if (!messaging) {
-        try {
-            messaging = admin.messaging();
-        } catch (e) {
-            console.warn('Firebase Admin messaging is not initialized. Skipping push notification.');
-            return false;
-        }
+        try { messaging = admin.messaging(); } catch (e) { return false; }
     }
 
-    // Human-readable title/body depending on outcome type
     let title, body;
     switch (type) {
         case 'REQUEST_APPROVED':
@@ -1315,143 +43,73 @@ async function sendRequestStatusNotification(userId, deviceToken, requestId, boo
     const message = {
         token: deviceToken,
         notification: { title, body },
-        data: {
-            type,
-            requestId: String(requestId),
-            title,
-            body
-        },
+        data: { type, requestId: String(requestId), title, body },
         android: {
             priority: 'high',
-            notification: {
-                channelId: 'library_requests',
-                sound: 'default'
-            }
+            notification: { channelId: 'library_requests', sound: 'default' }
         }
     };
 
     try {
-        const response = await messaging.send(message);
-        console.log('Successfully sent push notification:', response);
+        await messaging.send(message);
         return true;
     } catch (error) {
-        console.error('Error sending push notification:', error);
-
-        if (
-            error.code === 'messaging/registration-token-not-registered' ||
-            error.code === 'messaging/invalid-registration-token'
-        ) {
+        if (error.code === 'messaging/registration-token-not-registered' ||
+            error.code === 'messaging/invalid-registration-token') {
             try {
                 await pool.execute('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
-                console.log(`Removed invalid FCM token for user ID: ${userId}`);
-            } catch (dbErr) {
-                console.error('Failed to remove invalid FCM token from database:', dbErr);
-            }
+            } catch (dbErr) { }
         }
         return false;
     }
 }
 
-/**
- * Helper function to verify PBKDF2 hashes stored in format:
- * PBKDF2:iterations:saltBase64:hashBase64
- */
 function verifyPbkdf2Password(password, storedHash) {
     try {
         const parts = storedHash.split(':');
-        if (parts.length !== 4 || parts[0] !== 'PBKDF2') {
-            return false;
-        }
-
+        if (parts.length !== 4 || parts[0] !== 'PBKDF2') return false;
         const iterations = parseInt(parts[1], 10);
         const salt = Buffer.from(parts[2], 'base64');
         const originalHash = Buffer.from(parts[3], 'base64');
-
-        const keylen = originalHash.length;
-
-        const derivedHash = crypto.pbkdf2Sync(
-            password,
-            salt,
-            iterations,
-            keylen,
-            'sha256'
-        );
-
+        const derivedHash = crypto.pbkdf2Sync(password, salt, iterations, originalHash.length, 'sha256');
         return crypto.timingSafeEqual(originalHash, derivedHash);
-    } catch (err) {
-        console.error('PBKDF2 Verification Error:', err);
-        return false;
-    }
+    } catch (err) { return false; }
 }
 
-/**
- * Helper function to verify passwords regardless of format (BCRYPT or PBKDF2)
- */
 async function verifyPassword(inputPassword, librarian) {
     const storedHash = librarian.password;
-
     if (!storedHash) return false;
-
     if (storedHash.startsWith('PBKDF2:') || librarian.password_format === 'PBKDF2') {
         return verifyPbkdf2Password(inputPassword, storedHash);
     }
-
     return await bcrypt.compare(inputPassword, storedHash);
 }
 
 class LibrarianController {
 
-    /**
-     * Update FCM Token for librarian
-     * POST /api/librarian/fcm-token
-     */
     static async updateFcmToken(req, res) {
         try {
             const { token } = req.body;
-            if (!token) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'Token required' 
-                });
-            }
-
+            if (!token) return res.status(400).json({ success: false, error: 'Token required' });
             const librarianId = req.user.id;
-            await pool.execute(
-                'UPDATE librarians SET fcm_token = ? WHERE id = ?',
-                [token, librarianId]
-            );
-
+            await pool.execute('UPDATE librarians SET fcm_token = ? WHERE id = ?', [token, librarianId]);
             res.json({ success: true });
         } catch (error) {
-            console.error('Update FCM token error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to update FCM token'
-            });
+            res.status(500).json({ success: false, message: 'Failed to update FCM token' });
         }
     }
 
-    /**
-     * Get logged-in Librarian profile details
-     * GET /api/librarian/profile
-     */
     static async getProfile(req, res) {
         try {
             const librarianId = req.user.id;
             const [rows] = await pool.execute(
-               `SELECT id, username, full_name, employee_id, email, phone, institution 
-                 FROM librarians 
-                 WHERE id = ? AND is_active = 1`,
+                `SELECT id, username, full_name, employee_id, email, phone, institution
+                    FROM librarians WHERE id = ? AND is_active = 1`,
                 [librarianId]
             );
-
             if (!rows || rows.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Librarian not found'
-                });
+                return res.status(404).json({ success: false, message: 'Librarian not found' });
             }
-
             res.json({
                 success: true,
                 librarian: {
@@ -1465,18 +123,10 @@ class LibrarianController {
                 }
             });
         } catch (error) {
-            console.error('Get librarian profile error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to retrieve profile information'
-            });
+            res.status(500).json({ success: false, message: 'Failed to retrieve profile information' });
         }
     }
 
-    /**
-     * Librarian Login
-     * POST /api/librarian/login
-     */
     static async login(req, res) {
         try {
             const { username, password } = req.body;
@@ -1489,22 +139,18 @@ class LibrarianController {
             }
 
             const [rows] = await pool.execute(
-                `SELECT id, username, password, password_format, full_name, employee_id, email, phone, institution, is_active 
-                 FROM librarians 
-                 WHERE username = ? OR employee_id = ? OR email = ?`,
+                `SELECT id, username, password, password_format, full_name, employee_id, email, phone, institution, is_active
+                    FROM librarians
+                  WHERE username = ? OR employee_id = ? OR email = ?`,
                 [username, username, username]
             );
 
-            if (!rows || !Array.isArray(rows) || rows.length === 0) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Invalid librarian credentials'
-                });
+            if (!rows || rows.length === 0) {
+                return res.status(401).json({ success: false, message: 'Invalid librarian credentials' });
             }
 
             const librarian = rows[0];
 
-            // Account-level lockout check
             const lock = await LoginLockout.checkLocked('librarians', librarian.id);
             if (lock.locked) {
                 return res.status(423).json({
@@ -1522,23 +168,14 @@ class LibrarianController {
 
             const isMatch = await verifyPassword(password, librarian);
             if (!isMatch) {
-                // Register failed attempt
                 await LoginLockout.registerFailure('librarians', librarian.id);
-                return res.status(401).json({
-                    success: false,
-                    message: 'Invalid librarian credentials'
-                });
+                return res.status(401).json({ success: false, message: 'Invalid librarian credentials' });
             }
 
-            // Successful login clears the lockout counter
             await LoginLockout.clearLock('librarians', librarian.id);
 
-            // Single-session: generate a new session id and store it on the row.
             const sid = crypto.randomBytes(32).toString('hex');
-            await pool.execute(
-                'UPDATE librarians SET current_session_id = ? WHERE id = ?',
-                [sid, librarian.id]
-            );
+            await pool.execute('UPDATE librarians SET current_session_id = ? WHERE id = ?', [sid, librarian.id]);
 
             const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
@@ -1571,22 +208,10 @@ class LibrarianController {
                 }
             });
         } catch (error) {
-            console.error('Librarian login error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Internal server error during authentication'
-            });
+            res.status(500).json({ success: false, message: 'Internal server error during authentication' });
         }
     }
 
-    /**
-     * Get pending requests for approval/rejection
-     * GET /api/librarian/requests/pending
-     *
-     * SCOPED: Only returns requests for books belonging to the
-     * librarian's institution (or the global 'General' bucket).
-     * Librarians with no institution see an empty list.
-     */
     static async getPendingRequests(req, res) {
         try {
             const institution = req.user && req.user.institution ? req.user.institution : null;
@@ -1632,7 +257,6 @@ class LibrarianController {
                 data: rows || []
             });
         } catch (error) {
-            console.error('Get pending requests error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to retrieve pending requests'
@@ -1640,10 +264,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Approve book borrow or return request
-     * POST /api/librarian/requests/:id/approve
-     */
     static async approveRequest(req, res) {
         const connection = await pool.getConnection();
         try {
@@ -1723,9 +343,7 @@ class LibrarianController {
                              VALUES (?, ?, ?, ?, 'BORROWED', NOW())`,
                             [request.user_id, request.book_id, borrowDate, dueDate]
                         );
-                    } catch (e) {
-                        // Borrows table insertion fallback handled
-                    }
+                    } catch (e) { }
                 }
             } else if (request.request_type === 'RETURN') {
                 await connection.execute(
@@ -1750,9 +368,7 @@ class LibrarianController {
                              ORDER BY borrow_date ASC LIMIT 1`,
                             [request.user_id, request.book_id]
                         );
-                    } catch (e) {
-                        // Borrows table update fallback handled
-                    }
+                    } catch (e) { }
                 }
             }
 
@@ -1784,9 +400,7 @@ class LibrarianController {
                             type
                         );
                     }
-                } catch (notifErr) {
-                    console.error('Failed to trigger approval notification:', notifErr);
-                }
+                } catch (notifErr) { }
             })();
 
             res.json({
@@ -1795,7 +409,6 @@ class LibrarianController {
             });
         } catch (error) {
             await connection.rollback();
-            console.error('Approve request error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to approve request'
@@ -1805,10 +418,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Reject request with reason
-     * POST /api/librarian/requests/:id/reject
-     */
     static async rejectRequest(req, res) {
         try {
             const requestId = req.params.id;
@@ -1874,9 +483,7 @@ class LibrarianController {
                             type
                         );
                     }
-                } catch (notifErr) {
-                    console.error('Failed to trigger rejection notification:', notifErr);
-                }
+                } catch (notifErr) { }
             })();
 
             res.json({
@@ -1884,7 +491,6 @@ class LibrarianController {
                 message: 'Request successfully rejected'
             });
         } catch (error) {
-            console.error('Reject request error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to reject request'
@@ -1892,10 +498,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Get dashboard summary statistics
-     * GET /api/librarian/statistics
-     */
     static async getStatistics(req, res) {
         try {
             const institution = req.user && req.user.institution ? req.user.institution : null;
@@ -1950,9 +552,7 @@ class LibrarianController {
                     [institution]
                 );
                 activeLibrariansCount = librarians ? librarians.count : 0;
-            } catch (e) {
-                activeLibrariansCount = 0;
-            }
+            } catch (e) { }
 
             let activeBorrowsCount = 0;
             try {
@@ -1967,9 +567,7 @@ class LibrarianController {
                     [institution, GLOBAL_INSTITUTION]
                 );
                 activeBorrowsCount = borrows ? borrows.count : 0;
-            } catch (e) {
-                activeBorrowsCount = 0;
-            }
+            } catch (e) { }
 
             const statsData = {
                 activeUsers: totalUsers ? totalUsers.count : 0,
@@ -1991,7 +589,6 @@ class LibrarianController {
                 data: statsData
             });
         } catch (error) {
-            console.error('Get statistics error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to retrieve dashboard statistics'
@@ -1999,10 +596,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Get request history with optional filtering
-     * GET /api/librarian/requests/history
-     */
     static async getRequestHistory(req, res) {
         try {
             const { status, requestType, search, limit } = req.query;
@@ -2078,7 +671,6 @@ class LibrarianController {
                 data: rows || []
             });
         } catch (error) {
-            console.error('Get request history error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to retrieve request history'
@@ -2086,10 +678,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Add remark to a request
-     * POST /api/librarian/requests/:id/remark
-     */
     static async addRequestRemark(req, res) {
         try {
             const requestId = req.params.id;
@@ -2168,7 +756,6 @@ class LibrarianController {
                 }
             });
         } catch (error) {
-            console.error('Add remark error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to add remark'
@@ -2176,10 +763,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Verify Librarian Identity for Password Reset
-     * POST /api/librarian/verify-identity
-     */
     static async verifyIdentity(req, res) {
         try {
             const employeeId = req.body.employeeId || req.body.employee_id || null;
@@ -2214,7 +797,6 @@ class LibrarianController {
                 message: 'Identity verified successfully.'
             });
         } catch (error) {
-            console.error('Verify identity error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to verify identity.'
@@ -2222,10 +804,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Reset Librarian Password
-     * POST /api/librarian/reset-password
-     */
     static async resetPassword(req, res) {
         try {
             const { username, employeeId, newPassword } = req.body;
@@ -2267,7 +845,6 @@ class LibrarianController {
                 message: 'Password reset successfully. You can now login.'
             });
         } catch (error) {
-            console.error('Reset password error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to reset password.'
@@ -2275,10 +852,6 @@ class LibrarianController {
         }
     }
 
-    /**
-     * Get borrow trend analytics for charts
-     * GET /api/librarian/analytics/trends?days=7
-     */
     static async getBorrowTrends(req, res) {
         try {
             const institution = req.user && req.user.institution ? req.user.institution : null;
@@ -2380,15 +953,12 @@ class LibrarianController {
                 }
             });
         } catch (error) {
-            console.error('Get borrow trends error:', error);
             res.status(500).json({
                 success: false,
                 message: 'Failed to retrieve analytics'
             });
         }
     }
-
-    // --- Institution-Scoped Book Management ---
 
     static async listMyInstitutionBooks(req, res) {
         try {
@@ -2401,7 +971,6 @@ class LibrarianController {
             );
             res.json({ success: true, count: rows.length, data: rows });
         } catch (e) {
-            console.error('List institution books error:', e);
             res.status(500).json({ success: false, message: 'Failed to list books' });
         }
     }
@@ -2435,7 +1004,6 @@ class LibrarianController {
             });
             res.status(201).json({ success: true, message: 'Book added', bookId: id });
         } catch (e) {
-            console.error('Librarian add book error:', e);
             res.status(500).json({ success: false, message: 'Failed to add book' });
         }
     }
@@ -2454,7 +1022,6 @@ class LibrarianController {
             if (!ok) return res.status(400).json({ success: false, message: 'No changes' });
             res.json({ success: true });
         } catch (e) {
-            console.error('Update institution book error:', e);
             res.status(500).json({ success: false, message: 'Failed to update book' });
         }
     }
@@ -2472,7 +1039,6 @@ class LibrarianController {
             await Book.deleteById(req.params.id);
             res.json({ success: true });
         } catch (e) {
-            console.error('Delete institution book error:', e);
             res.status(500).json({ success: false, message: 'Failed to delete book' });
         }
     }
