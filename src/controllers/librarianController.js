@@ -345,6 +345,21 @@ class LibrarianController {
                         );
                     } catch (e) { }
                 }
+
+                // NEW: also write borrow_date and due_date into the request row
+                // so the student's My Requests screen can display them.
+                // due_date is stored as DATE (see DB schema), so MySQL will
+                // truncate the time portion — that is expected.
+                await connection.execute(
+                    `UPDATE book_requests 
+                     SET status = 'APPROVED', 
+                         approved_by = ?, 
+                         approval_date = NOW(),
+                         borrow_date = NOW(),
+                         due_date = DATE_ADD(NOW(), INTERVAL 14 DAY)
+                     WHERE id = ?`,
+                    [librarianId, requestId]
+                );
             } else if (request.request_type === 'RETURN') {
                 await connection.execute(
                     `UPDATE books SET available_quantity = available_quantity + 1 WHERE id = ?`,
@@ -370,14 +385,26 @@ class LibrarianController {
                         );
                     } catch (e) { }
                 }
-            }
 
-            await connection.execute(
-                `UPDATE book_requests 
-                 SET status = 'APPROVED', approved_by = ?, approval_date = NOW() 
-                 WHERE id = ?`,
-                [librarianId, requestId]
-            );
+                // NEW: mark the return request row itself as RETURNED and
+                // record the moment the book was handed back. The status
+                // ENUM in the DB includes 'RETURNED', so this is valid.
+                await connection.execute(
+                    `UPDATE book_requests 
+                     SET status = 'RETURNED', 
+                         approved_by = ?, 
+                         approval_date = NOW(),
+                         return_date = NOW()
+                     WHERE id = ?`,
+                    [librarianId, requestId]
+                );
+            } else {
+                await connection.rollback();
+                return res.status(400).json({
+                    success: false,
+                    message: `Unknown request type: ${request.request_type}`
+                });
+            }
 
             await connection.commit();
 
