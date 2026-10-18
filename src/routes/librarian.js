@@ -1,14 +1,49 @@
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
 const LibrarianController = require('../controllers/librarianController');
 const { librarianAuth } = require('../middleware/auth');
+
+// ---- Rate limiters (NEW) ----
+const librarianLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many login attempts. Please try again in a few minutes.'
+  }
+});
+
+const verifyIdentityLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many verification attempts. Please try again later.'
+  }
+});
+
+const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many password reset attempts. Please try again later.'
+  }
+});
 
 /**
  * @route   POST /api/librarian/login
  * @desc    Authenticate librarian & return JWT token
  * @access  Public
  */
-router.post('/login', LibrarianController.login);
+router.post('/login', librarianLoginLimiter, LibrarianController.login);
 
 /**
  * @route   POST /api/librarian/fcm-token
@@ -29,14 +64,14 @@ router.get('/profile', librarianAuth, LibrarianController.getProfile);
  * @desc    Verify librarian credentials for password recovery
  * @access  Public
  */
-router.post('/verify-identity', LibrarianController.verifyIdentity);
+router.post('/verify-identity', verifyIdentityLimiter, LibrarianController.verifyIdentity);
 
 /**
  * @route   POST /api/librarian/reset-password
  * @desc    Reset librarian password
  * @access  Public
  */
-router.post('/reset-password', LibrarianController.resetPassword);
+router.post('/reset-password', resetPasswordLimiter, LibrarianController.resetPassword);
 
 /**
  * @route   GET /api/librarian/requests/pending
@@ -87,34 +122,9 @@ router.post('/requests/:id/remark', librarianAuth, LibrarianController.addReques
  */
 router.get('/analytics/trends', librarianAuth, LibrarianController.getBorrowTrends);
 
-// --- Book Management (Scoped to Librarian's Institution) ---
-
-/**
- * @route   POST /api/librarian/books
- * @desc    Upload/add a new book (scoped to librarian's institution)
- * @access  Private (Librarian only)
- */
 router.post('/books', librarianAuth, LibrarianController.addBook);
-
-/**
- * @route   GET /api/librarian/books
- * @desc    List all books belonging to librarian's institution
- * @access  Private (Librarian only)
- */
 router.get('/books', librarianAuth, LibrarianController.listMyInstitutionBooks);
-
-/**
- * @route   PUT /api/librarian/books/:id
- * @desc    Update a book belonging to librarian's institution
- * @access  Private (Librarian only)
- */
 router.put('/books/:id', librarianAuth, LibrarianController.updateMyInstitutionBook);
-
-/**
- * @route   DELETE /api/librarian/books/:id
- * @desc    Delete a book belonging to librarian's institution
- * @access  Private (Librarian only)
- */
 router.delete('/books/:id', librarianAuth, LibrarianController.deleteMyInstitutionBook);
 
 module.exports = router;
