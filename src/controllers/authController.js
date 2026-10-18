@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Librarian = require('../models/Librarian');
 const { sendResetEmail } = require('../config/email');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
+const LoginLockout = require('../utils/loginLockout');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
@@ -25,13 +26,29 @@ class AuthController {
         });
       }
 
+      // 1. Try users table (STUDENT or ADMIN)
       let user = await User.findByEmail(identifier);
       if (!user) user = await User.findByUsername(identifier);
 
       if (user) {
+        // NEW: account-level lockout check
+        const lock = await LoginLockout.checkLocked('users', user.id);
+        if (lock.locked) {
+          return res.status(423).json({
+            success: false,
+            message: `Account is temporarily locked due to repeated failed login attempts. Try again after ${new Date(lock.until).toLocaleTimeString()}.`
+          });
+        }
+
         if (!verifyPassword(password, user.password)) {
+          // NEW: register the failure (may set the lock)
+          await LoginLockout.registerFailure('users', user.id);
           return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
+
+        // NEW: successful login clears any prior failure counter.
+        await LoginLockout.clearLock('users', user.id);
+
         const role = (user.role || 'STUDENT').toUpperCase();
         const sid = newSessionId();
         await User.setCurrentSession(user.id, sid);
@@ -68,8 +85,18 @@ class AuthController {
         });
       }
 
+      // 2. Try librarians table
       const librarian = await Librarian.findByUsernameOrEmailOrEmployee(identifier);
       if (librarian) {
+        // NEW: lockout check
+        const lock = await LoginLockout.checkLocked('librarians', librarian.id);
+        if (lock.locked) {
+          return res.status(423).json({
+            success: false,
+            message: `Account is temporarily locked due to repeated failed login attempts. Try again after ${new Date(lock.until).toLocaleTimeString()}.`
+          });
+        }
+
         const stored = librarian.password;
         let ok = false;
         if (stored && stored.startsWith('PBKDF2:')) {
@@ -78,8 +105,13 @@ class AuthController {
           ok = verifyPassword(password, stored);
         }
         if (!ok) {
+          // NEW: register the failure
+          await LoginLockout.registerFailure('librarians', librarian.id);
           return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
+
+        // NEW: successful login clears any prior failure counter.
+        await LoginLockout.clearLock('librarians', librarian.id);
 
         const sid = newSessionId();
         await Librarian.setCurrentSession(librarian.id, sid);
@@ -409,22 +441,10 @@ class AuthController {
     }
   }
 
-  /**
-   * Server-side logout.
-   * POST /api/auth/logout
-   *
-   * Clears current_session_id for the caller so the token they just
-   * used becomes invalid immediately on the server, regardless of the
-   * JWT expiry window. Requires a valid JWT — optionalAuthMiddleware
-   * populates req.user when a token is present, and if it isn't we
-   * respond successfully (idempotent logout).
-   */
   static async logout(req, res) {
     try {
       const payload = req.user;
       if (!payload || !payload.id) {
-        // No active session — nothing to clear. Return success so that
-        // clients can always call logout unconditionally.
         return res.json({ success: true, message: 'Logged out.' });
       }
 
