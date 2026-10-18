@@ -18,8 +18,9 @@ const validateRequest = (req, res, next) => {
   next();
 };
 
-// express-validator custom validator for password strength.
-// Uses the same logic as the Android PasswordValidator, keeping client and server aligned.
+// NEW: express-validator custom validator for password strength.
+// Uses the same regex as the Android PasswordValidator, so client and
+// server can never drift apart.
 const passwordStrengthValidator = body('password').custom((value) => {
   if (!PasswordPolicy.isValid(value)) {
     throw new Error(PasswordPolicy.requirementShort());
@@ -97,7 +98,7 @@ router.post('/register', registerLimiter, [
   body('username').notEmpty().withMessage('Username is required').trim(),
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('fullName').notEmpty().withMessage('Full name is required').trim(),
-  passwordStrengthValidator,          // server-side strength check
+  passwordStrengthValidator,          // NEW: server-side strength check
   body('level').optional().trim(),
   body('ntaLevel').optional().trim(),
   body('phone').optional().trim(),
@@ -122,7 +123,7 @@ router.post('/reset-password', resetPasswordLimiter, [
     }
     return true;
   }),
-  newPasswordStrengthValidator,       // server-side strength check
+  newPasswordStrengthValidator,       // NEW: server-side strength check
   validateRequest
 ], AuthController.resetPassword);
 
@@ -130,7 +131,7 @@ const changePasswordValidation = [
   optionalAuthMiddleware,
   body('userId').optional().isInt({ min: 1 }).withMessage('Valid userId is required'),
   body('currentPassword').notEmpty().withMessage('Current password is required'),
-  newPasswordStrengthValidator,       // same check on change-password
+  newPasswordStrengthValidator,       // NEW: same check on change-password
   validateRequest
 ];
 
