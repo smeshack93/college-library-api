@@ -20,6 +20,11 @@ const userRoutes = require('./routes/user');
 
 const app = express();
 
+// NEW: trust Render's reverse proxy so req.ip reflects the client IP.
+// Without this, express-rate-limit sees the proxy's IP and one user
+// can lock out every other user for the same window.
+app.set('trust proxy', 1);
+
 // --- Firebase Initialization ---
 try {
   const serviceAccount = JSON.parse(
@@ -30,7 +35,6 @@ try {
     credential: admin.credential.cert(serviceAccount)
   });
 
-  // Quick verification log
   (async () => {
     try {
       const token = await admin.auth().createCustomToken("test-user-id");
@@ -45,26 +49,35 @@ try {
 
 // --- Middleware ---
 app.use(helmet());
-app.use(cors());
+
+// NEW: CORS narrowed to specific origins. The Android app is not
+// affected by CORS (native HTTP clients don't send an Origin header
+// and don't enforce CORS). If you open the API from a web UI, add the
+// origin here. To revert to the previous wide-open behaviour, replace
+// this whole block with `app.use(cors());`.
+app.use(cors({
+  origin: [
+    'https://college-library-api-xyb6.onrender.com',
+    'http://localhost:3000',
+    'http://localhost:5173'
+  ],
+  credentials: false
+}));
+
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // --- API Routes ---
 
-// Welcome Route
 app.get('/', (req, res) => {
-  res.json({ 
+  res.json({
     message: 'College Library API',
     status: 'Running',
     config_source: 'ca.env'
   });
 });
 
-/**
- * DUAL HEALTH CHECK
- * Fixes "Connection Failed" by responding to both root and api paths.
- */
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString(), db_connected: !!pool });
 });
@@ -73,29 +86,25 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString(), db_connected: !!pool });
 });
 
-/**
- * SINGLE ROUTE MOUNTING WITH /api PREFIX
- * Standard REST practice
- */
-app.use('/api/auth', authRoutes);          
+app.use('/api/auth', authRoutes);
 app.use('/api/librarian', librarianRoutes);
-app.use('/api/admin', adminRoutes);        
-app.use('/api/books', bookRoutes);         
-app.use('/api/user', userRoutes);           
+app.use('/api/admin', adminRoutes);
+app.use('/api/books', bookRoutes);
+app.use('/api/user', userRoutes);
 
 // --- Error Handling ---
 app.use((req, res) => {
-  res.status(404).json({ 
-    success: false, 
-    message: `Route ${req.originalUrl} not found. Check path nesting.` 
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.originalUrl} not found. Check path nesting.`
   });
 });
 
 app.use((err, req, res, next) => {
   console.error('🔥 Server Error:', err.stack);
-  res.status(err.status || 500).json({ 
-    success: false, 
-    message: err.message || 'Internal Server Error' 
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Internal Server Error'
   });
 });
 
