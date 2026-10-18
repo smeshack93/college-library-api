@@ -346,10 +346,6 @@ class LibrarianController {
                     } catch (e) { }
                 }
 
-                // NEW: also write borrow_date and due_date into the request row
-                // so the student's My Requests screen can display them.
-                // due_date is stored as DATE (see DB schema), so MySQL will
-                // truncate the time portion — that is expected.
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'APPROVED', 
@@ -386,9 +382,6 @@ class LibrarianController {
                     } catch (e) { }
                 }
 
-                // NEW: mark the return request row itself as RETURNED and
-                // record the moment the book was handed back. The status
-                // ENUM in the DB includes 'RETURNED', so this is valid.
                 await connection.execute(
                     `UPDATE book_requests 
                      SET status = 'RETURNED', 
@@ -1056,16 +1049,34 @@ class LibrarianController {
     static async deleteMyInstitutionBook(req, res) {
         try {
             const institution = req.user?.institution || null;
-            const [rows] = await pool.execute('SELECT institution FROM books WHERE id = ?', [req.params.id]);
-            if (!rows.length) return res.status(404).json({ success: false, message: 'Book not found' });
+            const [rows] = await pool.execute(
+                'SELECT institution FROM books WHERE id = ?',
+                [req.params.id]
+            );
+            if (!rows.length) {
+                return res.status(404).json({ success: false, message: 'Book not found' });
+            }
             if (institution && rows[0].institution && rows[0].institution !== institution) {
                 return res.status(403).json({ success: false, message: 'Not your institution' });
             }
-
+            // FK guard — refuse to delete books with borrowing history
+            const [[{ count }]] = await pool.execute(
+                'SELECT COUNT(*) AS count FROM book_requests WHERE book_id = ?',
+                [req.params.id]
+            );
+            if (count > 0) {
+                return res.status(409).json({
+                    success: false,
+                    message: `Cannot delete "${req.body.title || 'this book'}": ` +
+                             `${count} borrow/return record(s) reference it. ` +
+                             `Keep the record for audit history.`
+                });
+            }
             const Book = require('../models/Book');
             await Book.deleteById(req.params.id);
-            res.json({ success: true });
+            res.json({ success: true, message: 'Book deleted' });
         } catch (e) {
+            console.error('deleteMyInstitutionBook error:', e);
             res.status(500).json({ success: false, message: 'Failed to delete book' });
         }
     }
