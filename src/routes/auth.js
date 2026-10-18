@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const AuthController = require('../controllers/authController');
 const { optionalAuthMiddleware } = require('../middleware/auth');
@@ -12,17 +13,71 @@ const validateRequest = (req, res, next) => {
   if (!errors.isEmpty()) {
     return res.status(400).json({
       success: false,
-      message: errors.array()[0].msg, // Returns the first error message
+      message: errors.array()[0].msg,
       errors: errors.array()
     });
   }
   next();
 };
 
+// ---- Rate limiters (NEW) ----
+// Login: 20 attempts per IP per 15 minutes.
+// A human rarely tries more than a few times; a brute-force script
+// would be cut off long before guessing anything useful.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many login attempts. Please try again in a few minutes.'
+  }
+});
+
+// Registration: 10 new accounts per IP per hour.
+// Legitimate users register once. Bulk registration is abuse.
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many registration attempts. Please try again later.'
+  }
+});
+
+// Forgot password: 5 per IP per 15 minutes.
+// Prevents email-bombing a victim's inbox from your Resend account.
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many password reset requests. Please try again later.'
+  }
+});
+
+// Reset password: 10 per IP per 15 minutes.
+// Tighter than login because a valid token is required anyway.
+const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many password reset attempts. Please try again later.'
+  }
+});
+
 // --- Authentication Routes ---
 
-// Login (Supports 'identifier', 'email', or 'username' dynamically for students, librarians, and admins)
-router.post('/login', [
+// Login
+router.post('/login', loginLimiter, [
   body().custom((value, { req }) => {
     const identifier = req.body.identifier || req.body.email || req.body.username;
     if (!identifier || typeof identifier !== 'string' || !identifier.trim()) {
@@ -34,8 +89,8 @@ router.post('/login', [
   validateRequest
 ], AuthController.login);
 
-// Register (Students only; supports both 'institution'/'college' and 'level'/'ntaLevel')
-router.post('/register', [
+// Register
+router.post('/register', registerLimiter, [
   body('username').notEmpty().withMessage('Username is required').trim(),
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('fullName').notEmpty().withMessage('Full name is required').trim(),
@@ -48,15 +103,15 @@ router.post('/register', [
   validateRequest
 ], AuthController.register);
 
-// Forgot password — request reset link
-router.post('/forgot-password', [
+// Forgot password
+router.post('/forgot-password', forgotPasswordLimiter, [
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('role').optional().trim(),
   validateRequest
 ], AuthController.forgotPassword);
 
-// Reset password — accepts EITHER a `token` (student/admin) OR an `employeeId` (librarian)
-router.post('/reset-password', [
+// Reset password
+router.post('/reset-password', resetPasswordLimiter, [
   body().custom((value, { req }) => {
     const token = req.body.token;
     const employeeId = req.body.employeeId;
@@ -79,8 +134,12 @@ const changePasswordValidation = [
   validateRequest
 ];
 
-// Change password (POST & PUT supported for cross-compatibility)
 router.post('/change-password', changePasswordValidation, AuthController.changePassword);
 router.put('/change-password', changePasswordValidation, AuthController.changePassword);
+
+// ---- NEW: server-side logout endpoint ----
+// Clears current_session_id for the requesting account so the JWT
+// becomes unusable immediately, even though its expiry hasn't passed.
+router.post('/logout', optionalAuthMiddleware, AuthController.logout);
 
 module.exports = router;
