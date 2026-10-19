@@ -8,26 +8,17 @@ const admin = require('firebase-admin');
 const GLOBAL_INSTITUTION = 'General';
 
 class BookController {
+
     /**
      * Get all available books
      * GET /api/books
-     *
-     * SCOPED: an authenticated caller (student or librarian) sees only
-     * books belonging to their institution (plus the global 'General'
-     * bucket). A caller with no institution sees an empty list.
-     * Unauthenticated requests also receive an empty list — the route
-     * is documented as "public" but the content is now user-specific.
      */
     static async getAllBooks(req, res) {
         try {
             const institution = req.user && req.user.institution ? req.user.institution : null;
 
             if (!institution) {
-                return res.json({
-                    success: true,
-                    count: 0,
-                    data: []
-                });
+                return res.json({ success: true, count: 0, data: [] });
             }
 
             const [rows] = await pool.execute(
@@ -39,11 +30,7 @@ class BookController {
                 [institution, GLOBAL_INSTITUTION]
             );
 
-            res.json({
-                success: true,
-                count: rows.length,
-                data: rows
-            });
+            res.json({ success: true, count: rows.length, data: rows });
         } catch (error) {
             console.error('Error fetching books:', error);
             res.status(500).json({
@@ -63,16 +50,10 @@ class BookController {
             const book = await Book.findById(id);
 
             if (!book) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Book not found'
-                });
+                return res.status(404).json({ success: false, message: 'Book not found' });
             }
 
-            res.json({
-                success: true,
-                data: book
-            });
+            res.json({ success: true, data: book });
         } catch (error) {
             console.error('Error fetching book:', error);
             res.status(500).json({
@@ -83,11 +64,8 @@ class BookController {
     }
 
     /**
-     * Submit a request for a book (handles both BORROW and RETURN)
+     * Submit a request for a book (BORROW only for now; RETURN has its own endpoint)
      * POST /api/books/request
-     *
-     * SCOPED: rejects any borrow of a book whose institution does not
-     * match the student's institution (or the global 'General' bucket).
      */
     static async requestBook(req, res) {
         try {
@@ -96,22 +74,14 @@ class BookController {
             const { bookId, requestType = 'BORROW' } = req.body;
 
             if (!bookId) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'bookId is required'
-                });
+                return res.status(400).json({ success: false, message: 'bookId is required' });
             }
 
             const book = await Book.findById(bookId);
             if (!book) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Book not found'
-                });
+                return res.status(404).json({ success: false, message: 'Book not found' });
             }
 
-            // Institution guard: the student must belong to the book's
-            // institution, unless the book is in the global 'General' bucket.
             if (!studentInstitution) {
                 return res.status(403).json({
                     success: false,
@@ -159,10 +129,7 @@ class BookController {
                     } else {
                         reason = 'You already have a pending request for this book.';
                     }
-                    return res.status(400).json({
-                        success: false,
-                        message: reason
-                    });
+                    return res.status(400).json({ success: false, message: reason });
                 }
             }
 
@@ -175,8 +142,6 @@ class BookController {
             const newRequestId = result.insertId;
 
             try {
-                // Notify librarians only of the book's institution (and the
-                // global bucket) — scoped at the query level.
                 const [librarians] = await pool.execute(
                     "SELECT id, fcm_token FROM librarians " +
                     "WHERE is_active = 1 " +
@@ -193,20 +158,12 @@ class BookController {
                     const body  = `A student requested "${book.title || 'a book'}".`;
 
                     const messagePayload = {
-                        tokens: tokens,
+                        tokens,
                         notification: { title, body },
-                        data: {
-                            type: 'NEW_REQUEST',
-                            requestId: String(newRequestId),
-                            title,
-                            body
-                        },
+                        data: { type: 'NEW_REQUEST', requestId: String(newRequestId), title, body },
                         android: {
                             priority: 'high',
-                            notification: {
-                                channelId: 'library_requests',
-                                sound: 'default'
-                            }
+                            notification: { channelId: 'library_requests', sound: 'default' }
                         }
                     };
 
@@ -238,8 +195,8 @@ class BookController {
      * Request to return a borrowed book
      * POST /api/books/return
      *
-     * SCOPED: same institution guard on the underlying book — the
-     * student must belong to the book's institution (or the global bucket).
+     * FIX: copies borrow_date and due_date from the parent BORROW row so the
+     * RETURN card on the student's screen shows a real due date instead of N/A.
      */
     static async requestReturn(req, res) {
         try {
@@ -254,16 +211,12 @@ class BookController {
                 });
             }
 
-            // Check the book's institution before touching request state.
             const [bookRows] = await pool.execute(
                 `SELECT id, institution FROM books WHERE id = ?`,
                 [bookId]
             );
             if (!bookRows.length) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Book not found'
-                });
+                return res.status(404).json({ success: false, message: 'Book not found' });
             }
             const bookInst = bookRows[0].institution;
             if (!studentInstitution) {
@@ -280,9 +233,9 @@ class BookController {
             }
 
             const [borrowRequests] = await pool.execute(
-                `SELECT id, book_id, status, request_type 
-                 FROM book_requests 
-                 WHERE id = ? AND user_id = ? AND status = 'APPROVED'`,
+                `SELECT id, book_id, status, request_type, borrow_date, due_date
+                   FROM book_requests
+                  WHERE id = ? AND user_id = ? AND status = 'APPROVED'`,
                 [requestId, userId]
             );
 
@@ -303,11 +256,11 @@ class BookController {
             }
 
             const [existingReturn] = await pool.execute(
-                `SELECT id FROM book_requests 
-                 WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status = 'PENDING'`,
+                `SELECT id FROM book_requests
+                  WHERE user_id = ? AND book_id = ?
+                    AND request_type = 'RETURN' AND status = 'PENDING'`,
                 [userId, bookId]
             );
-
             if (existingReturn.length > 0) {
                 return res.status(400).json({
                     success: false,
@@ -316,11 +269,11 @@ class BookController {
             }
 
             const [approvedReturn] = await pool.execute(
-                `SELECT id FROM book_requests 
-                 WHERE user_id = ? AND book_id = ? AND request_type = 'RETURN' AND status IN ('APPROVED', 'RETURNED')`,
+                `SELECT id FROM book_requests
+                  WHERE user_id = ? AND book_id = ?
+                    AND request_type = 'RETURN' AND status IN ('APPROVED', 'RETURNED')`,
                 [userId, bookId]
             );
-
             if (approvedReturn.length > 0) {
                 return res.status(400).json({
                     success: false,
@@ -335,8 +288,7 @@ class BookController {
                 });
             }
 
-            // Enforce that a librarian has added a remark to the
-            // original borrow record before the student may request return.
+            // Enforce librarian remark BEFORE allowing return.
             const [remarkCheck] = await pool.execute(
                 `SELECT remark FROM book_requests WHERE id = ?`,
                 [requestId]
@@ -353,21 +305,29 @@ class BookController {
                 });
             }
 
+            // FIX: copy borrow_date & due_date from parent BORROW row.
             const [result] = await pool.execute(
-                `INSERT INTO book_requests 
-                 (user_id, book_id, request_type, status, request_date, related_request_id, notes)
-                 VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?, ?)`,
-                [userId, bookId, requestId, 'Return request for borrowed book']
+                `INSERT INTO book_requests
+                   (user_id, book_id, request_type, status, request_date,
+                    related_request_id, notes, borrow_date, due_date)
+                 VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?, ?, ?, ?)`,
+                [
+                    userId,
+                    bookId,
+                    requestId,
+                    'Return request for borrowed book',
+                    borrowRequest.borrow_date || null,
+                    borrowRequest.due_date   || null
+                ]
             );
 
-            console.log(`📤 Return request created for user ${userId}, book ${bookId}, related to request ${requestId}`);
+            console.log(`📤 Return request created: user=${userId}, book=${bookId}, parent=${requestId}`);
 
             res.status(201).json({
                 success: true,
                 message: 'Return request submitted successfully',
                 requestId: result.insertId
             });
-
         } catch (error) {
             console.error('Error requesting return:', error);
             res.status(500).json({
@@ -380,69 +340,59 @@ class BookController {
     /**
      * Get all borrow requests for a specific user
      * GET /api/books/users/:id/borrows
-     * GET /api/books/user/:id/borrows
      */
     static async getUserBorrows(req, res) {
         try {
             const userId = req.params.id || req.params.userId;
-            
+
             const [users] = await pool.execute(
                 'SELECT id, full_name FROM users WHERE id = ?',
                 [userId]
             );
-            
             if (users.length === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'User not found'
-                });
+                return res.status(404).json({ success: false, message: 'User not found' });
             }
 
             const [rows] = await pool.execute(`
-                SELECT 
-                    br.id as requestId,
-                    br.book_id as bookId,
-                    br.request_date as requestDate,
+                SELECT
+                    br.id              as requestId,
+                    br.book_id         as bookId,
+                    br.request_date    as requestDate,
                     br.status,
-                    br.request_type as requestType,
-                    br.due_date as dueDate,
-                    br.borrow_date as borrowDate,
-                    br.approval_date as approvalDate,
+                    br.request_type    as requestType,
+                    br.due_date        as dueDate,
+                    br.borrow_date     as borrowDate,
+                    br.approval_date   as approvalDate,
                     br.notes,
                     br.related_request_id,
-                    b.title as bookTitle,
-                    b.author as bookAuthor,
+                    b.title            as bookTitle,
+                    b.author           as bookAuthor,
                     b.isbn,
                     b.category,
-                    b.level as ntaLevel,
-                    l.full_name as librarianName,
-                    l.phone     as librarianPhone,
-                    l.email     as librarianEmail,
+                    b.level            as ntaLevel,
+                    l.full_name        as librarianName,
+                    l.phone            as librarianPhone,
+                    l.email            as librarianEmail,
                     br.remark,
                     br.remark_by,
                     br.remark_date,
-                    rl.full_name as remarkByName,
-                    (SELECT COUNT(*) FROM book_requests 
-                     WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id)) 
-                       AND request_type = 'RETURN' AND status IN ('APPROVED', 'RETURNED')) as has_approved_return,
-                    (SELECT COUNT(*) FROM book_requests 
-                     WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id)) 
+                    rl.full_name       as remarkByName,
+                    parent.due_date    as parentDueDate,
+                    parent.borrow_date as parentBorrowDate,
+                    (SELECT COUNT(*) FROM book_requests
+                     WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id))
+                       AND request_type = 'RETURN' AND status IN ('APPROVED','RETURNED')) as has_approved_return,
+                    (SELECT COUNT(*) FROM book_requests
+                     WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id))
                        AND request_type = 'RETURN' AND status = 'PENDING') as has_pending_return
                 FROM book_requests br
                 JOIN books b ON br.book_id = b.id
-                LEFT JOIN librarians l ON br.approved_by = l.id
-                LEFT JOIN librarians rl ON br.remark_by = rl.id
+                LEFT JOIN book_requests parent ON br.related_request_id = parent.id
+                LEFT JOIN librarians l  ON br.approved_by = l.id
+                LEFT JOIN librarians rl ON br.remark_by   = rl.id
                 WHERE br.user_id = ?
                 ORDER BY br.request_date DESC
             `, [userId]);
-
-            if (rows.length === 0) {
-                return res.json({
-                    success: true,
-                    count: 0,
-                    data: []
-                });
-            }
 
             const formattedBorrows = rows.map(row => ({
                 requestId: row.requestId,
@@ -452,8 +402,9 @@ class BookController {
                 isbn: row.isbn || 'N/A',
                 status: row.status || 'PENDING',
                 requestDate: row.requestDate,
-                borrowDate: row.borrowDate || row.requestDate,
-                dueDate: row.dueDate || null,
+                // Prefer own date; fall back to parent BORROW row.
+                borrowDate: row.borrowDate || row.parentBorrowDate || row.requestDate,
+                dueDate:    row.dueDate    || row.parentDueDate    || null,
                 category: row.category || 'General',
                 ntaLevel: row.ntaLevel || 'N/A',
                 requestType: row.requestType || 'BORROW',
@@ -463,19 +414,14 @@ class BookController {
                 librarianEmail: row.librarianEmail || null,
                 relatedRequestId: row.related_request_id || 0,
                 hasApprovedReturn: row.has_approved_return > 0,
-                hasPendingReturn: row.has_pending_return > 0,
+                hasPendingReturn:  row.has_pending_return  > 0,
                 remark: row.remark || null,
                 remarkBy: row.remark_by || null,
                 remarkByName: row.remarkByName || null,
                 remarkDate: row.remark_date || null
             }));
 
-            res.json({
-                success: true,
-                count: formattedBorrows.length,
-                data: formattedBorrows
-            });
-
+            res.json({ success: true, count: formattedBorrows.length, data: formattedBorrows });
         } catch (error) {
             console.error('Error fetching user borrows:', error);
             res.status(500).json({
@@ -488,43 +434,54 @@ class BookController {
     /**
      * Get borrow requests for the current authenticated user
      * GET /api/books/my-borrows
+     *
+     * FIX: now returns hasApprovedReturn / hasPendingReturn and COALESCEs
+     * due/borrow dates from the parent BORROW row (parity with getUserBorrows).
      */
     static async getMyBorrows(req, res) {
         try {
             if (!req.user || !req.user.id) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Authentication required'
-                });
+                return res.status(401).json({ success: false, message: 'Authentication required' });
             }
-
             const userId = req.user.id;
 
             const [rows] = await pool.execute(`
-                SELECT 
-                    br.id as requestId,
-                    br.book_id as bookId,
-                    br.request_date as requestDate,
+                SELECT
+                    br.id              as requestId,
+                    br.book_id         as bookId,
+                    br.request_date    as requestDate,
                     br.status,
                     br.request_type,
-                    br.due_date as dueDate,
-                    br.borrow_date as borrowDate,
-                    b.title as bookTitle,
-                    b.author as bookAuthor,
+                    br.due_date        as dueDate,
+                    br.borrow_date     as borrowDate,
+                    br.approval_date   as approvalDate,
+                    br.notes,
+                    br.related_request_id,
+                    b.title            as bookTitle,
+                    b.author           as bookAuthor,
                     b.isbn,
                     b.category,
-                    b.level as ntaLevel,
-                    l.full_name as librarianName,
-                    l.phone     as librarianPhone,
-                    l.email     as librarianEmail,
+                    b.level            as ntaLevel,
+                    l.full_name        as librarianName,
+                    l.phone            as librarianPhone,
+                    l.email            as librarianEmail,
                     br.remark,
                     br.remark_by,
                     br.remark_date,
-                    rl.full_name as remarkByName
+                    rl.full_name       as remarkByName,
+                    parent.due_date    as parentDueDate,
+                    parent.borrow_date as parentBorrowDate,
+                    (SELECT COUNT(*) FROM book_requests
+                     WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id))
+                       AND request_type = 'RETURN' AND status IN ('APPROVED','RETURNED')) as has_approved_return,
+                    (SELECT COUNT(*) FROM book_requests
+                     WHERE (related_request_id = br.id OR (book_id = br.book_id AND user_id = br.user_id))
+                       AND request_type = 'RETURN' AND status = 'PENDING') as has_pending_return
                 FROM book_requests br
                 JOIN books b ON br.book_id = b.id
-                LEFT JOIN librarians l ON br.approved_by = l.id
-                LEFT JOIN librarians rl ON br.remark_by = rl.id
+                LEFT JOIN book_requests parent ON br.related_request_id = parent.id
+                LEFT JOIN librarians l  ON br.approved_by = l.id
+                LEFT JOIN librarians rl ON br.remark_by   = rl.id
                 WHERE br.user_id = ?
                 ORDER BY br.request_date DESC
             `, [userId]);
@@ -537,11 +494,15 @@ class BookController {
                 isbn: row.isbn || 'N/A',
                 status: row.status || 'PENDING',
                 requestDate: row.requestDate,
-                borrowDate: row.borrowDate || row.requestDate,
-                dueDate: row.dueDate || null,
+                borrowDate: row.borrowDate || row.parentBorrowDate || row.requestDate,
+                dueDate:    row.dueDate    || row.parentDueDate    || null,
                 category: row.category || 'General',
                 ntaLevel: row.ntaLevel || 'N/A',
                 requestType: row.request_type || 'BORROW',
+                notes: row.notes || '',
+                relatedRequestId: row.related_request_id || 0,
+                hasApprovedReturn: row.has_approved_return > 0,
+                hasPendingReturn:  row.has_pending_return  > 0,
                 librarianName:  row.librarianName  || null,
                 librarianPhone: row.librarianPhone || null,
                 librarianEmail: row.librarianEmail || null,
@@ -551,12 +512,7 @@ class BookController {
                 remarkDate: row.remark_date || null
             }));
 
-            res.json({
-                success: true,
-                count: formattedBorrows.length,
-                data: formattedBorrows
-            });
-
+            res.json({ success: true, count: formattedBorrows.length, data: formattedBorrows });
         } catch (error) {
             console.error('Error fetching my borrows:', error);
             res.status(500).json({
@@ -567,58 +523,61 @@ class BookController {
     }
 
     /**
-     * Approve a book request (handles both BORROW and RETURN)
+     * Approve a book request (BORROW or RETURN)
      * POST /api/librarian/requests/:id/approve
+     *
+     * NOTE: If your routes file wires this endpoint to LibrarianController.approveRequest
+     * instead, that version already has the same rules. This one is kept in parity so
+     * either wiring works identically.
      */
     static async approveRequest(req, res) {
         const connection = await pool.getConnection();
-        
         try {
             const { id } = req.params;
             const librarianId = req.user.id;
             const { notes = '' } = req.body;
-            
+
             await connection.beginTransaction();
-            
+
             const [requests] = await connection.execute(
-                `SELECT br.*, b.title, b.available_quantity, b.quantity 
-                 FROM book_requests br
-                 JOIN books b ON br.book_id = b.id
-                 WHERE br.id = ? AND br.status = 'PENDING'`,
+                `SELECT br.*, b.title, b.available_quantity, b.quantity
+                   FROM book_requests br
+                   JOIN books b ON br.book_id = b.id
+                  WHERE br.id = ? AND br.status = 'PENDING'`,
                 [id]
             );
-            
+
             if (requests.length === 0) {
                 await connection.rollback();
-                return res.status(404).json({ 
-                    success: false, 
-                    message: 'Request not found or already processed' 
+                return res.status(404).json({
+                    success: false,
+                    message: 'Request not found or already processed'
                 });
             }
-            
+
             const request = requests[0];
             let actionMessage = '';
-            
+
             if (request.request_type === 'BORROW') {
                 await connection.execute(
-                    `UPDATE book_requests 
-                     SET status = 'APPROVED', 
-                         approved_by = ?, 
-                         approval_date = NOW(),
-                         borrow_date = NOW(),
-                         due_date = DATE_ADD(NOW(), INTERVAL 14 DAY),
-                         notes = ?
-                     WHERE id = ?`,
+                    `UPDATE book_requests
+                        SET status = 'APPROVED',
+                            approved_by = ?,
+                            approval_date = NOW(),
+                            borrow_date = NOW(),
+                            due_date = DATE_ADD(NOW(), INTERVAL 14 DAY),
+                            notes = ?
+                      WHERE id = ?`,
                     [librarianId, notes, id]
                 );
 
                 const [updateResult] = await connection.execute(
-                    `UPDATE books 
-                     SET available_quantity = available_quantity - 1 
-                     WHERE id = ? AND available_quantity > 0`,
+                    `UPDATE books
+                        SET available_quantity = available_quantity - 1
+                      WHERE id = ? AND available_quantity > 0`,
                     [request.book_id]
                 );
-                
+
                 if (updateResult.affectedRows === 0) {
                     await connection.rollback();
                     return res.status(400).json({
@@ -627,35 +586,49 @@ class BookController {
                     });
                 }
                 actionMessage = 'Borrow request approved';
-                
+
             } else if (request.request_type === 'RETURN') {
+                // Enforce librarian remark on the original BORROW row before approving return.
+                if (request.related_request_id) {
+                    const [[borrowRow]] = await connection.execute(
+                        `SELECT remark FROM book_requests WHERE id = ?`,
+                        [request.related_request_id]
+                    );
+                    const hasRemark = borrowRow && borrowRow.remark !== null
+                        && String(borrowRow.remark).trim() !== '';
+                    if (!hasRemark) {
+                        await connection.rollback();
+                        return res.status(400).json({
+                            success: false,
+                            message: 'Cannot approve return: the borrow record has no librarian remark yet.'
+                        });
+                    }
+                }
+
                 await connection.execute(
-                    `UPDATE book_requests 
-                     SET status = 'RETURNED', 
-                         approved_by = ?, 
-                     approval_date = NOW(),
-                         return_date = NOW(),
-                         notes = ?
-                     WHERE id = ?`,
+                    `UPDATE book_requests
+                        SET status = 'RETURNED',
+                            approved_by = ?,
+                            approval_date = NOW(),
+                            return_date = NOW(),
+                            notes = ?
+                      WHERE id = ?`,
                     [librarianId, notes, id]
                 );
 
                 if (request.related_request_id) {
                     await connection.execute(
-                        `UPDATE book_requests 
-                         SET status = 'RETURNED' 
-                         WHERE id = ?`,
+                        `UPDATE book_requests SET status = 'RETURNED' WHERE id = ?`,
                         [request.related_request_id]
                     );
                 }
 
                 await connection.execute(
-                    `UPDATE books 
-                     SET available_quantity = available_quantity + 1 
-                     WHERE id = ?`,
+                    `UPDATE books SET available_quantity = available_quantity + 1 WHERE id = ?`,
                     [request.book_id]
                 );
                 actionMessage = 'Return request approved';
+
             } else {
                 await connection.rollback();
                 return res.status(400).json({
@@ -663,17 +636,17 @@ class BookController {
                     message: `Invalid request type: ${request.request_type}`
                 });
             }
-            
+
             await connection.commit();
-            
+
             const [updatedBooks] = await pool.execute(
                 'SELECT available_quantity FROM books WHERE id = ?',
                 [request.book_id]
             );
             const newQuantity = updatedBooks.length > 0 ? updatedBooks[0].available_quantity : 'unknown';
-            
-            res.json({ 
-                success: true, 
+
+            res.json({
+                success: true,
                 message: `${actionMessage} successfully`,
                 data: {
                     requestId: id,
@@ -681,13 +654,12 @@ class BookController {
                     newAvailableQuantity: newQuantity
                 }
             });
-            
         } catch (error) {
             await connection.rollback();
             console.error('❌ Approve request error:', error);
-            res.status(500).json({ 
-                success: false, 
-                message: 'Failed to approve request: ' + error.message 
+            res.status(500).json({
+                success: false,
+                message: 'Failed to approve request: ' + error.message
             });
         } finally {
             connection.release();
@@ -695,7 +667,7 @@ class BookController {
     }
 
     /**
-     * Reject a book request (handles both BORROW and RETURN)
+     * Reject a book request
      * POST /api/librarian/requests/:id/reject
      */
     static async rejectRequest(req, res) {
@@ -712,12 +684,12 @@ class BookController {
             }
 
             const [result] = await pool.execute(
-                `UPDATE book_requests 
-                 SET status = 'REJECTED', 
-                     approved_by = ?, 
-                     approval_date = NOW(),
-                     notes = ?
-                 WHERE id = ? AND status = 'PENDING'`,
+                `UPDATE book_requests
+                    SET status = 'REJECTED',
+                        approved_by = ?,
+                        approval_date = NOW(),
+                        notes = ?
+                  WHERE id = ? AND status = 'PENDING'`,
                 [librarianId, notes, id]
             );
 
@@ -728,11 +700,7 @@ class BookController {
                 });
             }
 
-            res.json({
-                success: true,
-                message: 'Request rejected successfully'
-            });
-
+            res.json({ success: true, message: 'Request rejected successfully' });
         } catch (error) {
             console.error('❌ Reject request error:', error);
             res.status(500).json({
