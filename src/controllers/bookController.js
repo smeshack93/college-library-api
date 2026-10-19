@@ -12,12 +12,6 @@ class BookController {
     /**
      * Get all available books
      * GET /api/books
-     *
-     * SCOPED: an authenticated caller (student or librarian) sees only
-     * books belonging to their institution (plus the global 'General'
-     * bucket). A caller with no institution sees an empty list.
-     * Unauthenticated requests also receive an empty list — the route
-     * is documented as "public" but the content is now user-specific.
      */
     static async getAllBooks(req, res) {
         try {
@@ -86,9 +80,6 @@ class BookController {
     /**
      * Submit a request for a book (handles both BORROW and RETURN)
      * POST /api/books/request
-     *
-     * SCOPED: rejects any borrow of a book whose institution does not
-     * match the student's institution (or the global 'General' bucket).
      */
     static async requestBook(req, res) {
         try {
@@ -167,7 +158,7 @@ class BookController {
 
             const [result] = await pool.execute(
                 `INSERT INTO book_requests (user_id, book_id, request_type, status, request_date)
-                 VALUES (?, ?, ?, 'PENDING', NOW())`,
+                 VALUES (?, ?, ?, 'PENDING', UTC_TIMESTAMP())`,
                 [userId, bookId, requestType]
             );
 
@@ -234,10 +225,6 @@ class BookController {
     /**
      * Request to return a borrowed book
      * POST /api/books/return
-     *
-     * FIX: copies borrow_date and due_date from the parent BORROW row so the
-     * RETURN card on the student's screen shows a real due date instead of N/A.
-     * SCOPED: same institution guard on the underlying book.
      */
     static async requestReturn(req, res) {
         try {
@@ -346,12 +333,12 @@ class BookController {
                 });
             }
 
-            // FIX: copy borrow_date & due_date from parent BORROW row.
+            // Copy borrow_date & due_date from parent BORROW row.
             const [result] = await pool.execute(
                 `INSERT INTO book_requests
                     (user_id, book_id, request_type, status, request_date,
                      related_request_id, notes, borrow_date, due_date)
-                  VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?, ?, ?, ?)`,
+                  VALUES (?, ?, 'RETURN', 'PENDING', UTC_TIMESTAMP(), ?, ?, ?, ?)`,
                 [
                     userId,
                     bookId,
@@ -381,7 +368,6 @@ class BookController {
     /**
      * Get all borrow requests for a specific user
      * GET /api/books/users/:id/borrows
-     * GET /api/books/user/:id/borrows
      */
     static async getUserBorrows(req, res) {
         try {
@@ -475,9 +461,6 @@ class BookController {
     /**
      * Get borrow requests for the current authenticated user
      * GET /api/books/my-borrows
-     *
-     * FIX: now returns hasApprovedReturn / hasPendingReturn and COALESCEs
-     * due/borrow dates from the parent BORROW row (parity with getUserBorrows).
      */
     static async getMyBorrows(req, res) {
         try {
@@ -600,9 +583,9 @@ class BookController {
                     `UPDATE book_requests
                         SET status = 'APPROVED',
                             approved_by = ?,
-                            approval_date = NOW(),
-                            borrow_date = NOW(),
-                            due_date = DATE_ADD(NOW(), INTERVAL 14 DAY),
+                            approval_date = UTC_TIMESTAMP(),
+                            borrow_date = UTC_TIMESTAMP(),
+                            due_date = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 14 DAY),
                             notes = ?
                       WHERE id = ?`,
                     [librarianId, notes, id]
@@ -646,8 +629,8 @@ class BookController {
                     `UPDATE book_requests
                         SET status = 'RETURNED',
                             approved_by = ?,
-                            approval_date = NOW(),
-                            return_date = NOW(),
+                            approval_date = UTC_TIMESTAMP(),
+                            return_date = UTC_TIMESTAMP(),
                             notes = ?
                       WHERE id = ?`,
                     [librarianId, notes, id]
@@ -724,7 +707,7 @@ class BookController {
                 `UPDATE book_requests
                     SET status = 'REJECTED',
                         approved_by = ?,
-                        approval_date = NOW(),
+                        approval_date = UTC_TIMESTAMP(),
                         notes = ?
                   WHERE id = ? AND status = 'PENDING'`,
                 [librarianId, notes, id]
