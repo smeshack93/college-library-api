@@ -12,13 +12,23 @@ class BookController {
     /**
      * Get all available books
      * GET /api/books
+     *
+     * SCOPED: an authenticated caller (student or librarian) sees only
+     * books belonging to their institution (plus the global 'General'
+     * bucket). A caller with no institution sees an empty list.
+     * Unauthenticated requests also receive an empty list — the route
+     * is documented as "public" but the content is now user-specific.
      */
     static async getAllBooks(req, res) {
         try {
             const institution = req.user && req.user.institution ? req.user.institution : null;
 
             if (!institution) {
-                return res.json({ success: true, count: 0, data: [] });
+                return res.json({
+                    success: true,
+                    count: 0,
+                    data: []
+                });
             }
 
             const [rows] = await pool.execute(
@@ -30,7 +40,11 @@ class BookController {
                 [institution, GLOBAL_INSTITUTION]
             );
 
-            res.json({ success: true, count: rows.length, data: rows });
+            res.json({
+                success: true,
+                count: rows.length,
+                data: rows
+            });
         } catch (error) {
             console.error('Error fetching books:', error);
             res.status(500).json({
@@ -50,10 +64,16 @@ class BookController {
             const book = await Book.findById(id);
 
             if (!book) {
-                return res.status(404).json({ success: false, message: 'Book not found' });
+                return res.status(404).json({
+                    success: false,
+                    message: 'Book not found'
+                });
             }
 
-            res.json({ success: true, data: book });
+            res.json({
+                success: true,
+                data: book
+            });
         } catch (error) {
             console.error('Error fetching book:', error);
             res.status(500).json({
@@ -64,8 +84,11 @@ class BookController {
     }
 
     /**
-     * Submit a request for a book (BORROW only for now; RETURN has its own endpoint)
+     * Submit a request for a book (handles both BORROW and RETURN)
      * POST /api/books/request
+     *
+     * SCOPED: rejects any borrow of a book whose institution does not
+     * match the student's institution (or the global 'General' bucket).
      */
     static async requestBook(req, res) {
         try {
@@ -74,12 +97,18 @@ class BookController {
             const { bookId, requestType = 'BORROW' } = req.body;
 
             if (!bookId) {
-                return res.status(400).json({ success: false, message: 'bookId is required' });
+                return res.status(400).json({
+                    success: false,
+                    message: 'bookId is required'
+                });
             }
 
             const book = await Book.findById(bookId);
             if (!book) {
-                return res.status(404).json({ success: false, message: 'Book not found' });
+                return res.status(404).json({
+                    success: false,
+                    message: 'Book not found'
+                });
             }
 
             if (!studentInstitution) {
@@ -129,7 +158,10 @@ class BookController {
                     } else {
                         reason = 'You already have a pending request for this book.';
                     }
-                    return res.status(400).json({ success: false, message: reason });
+                    return res.status(400).json({
+                        success: false,
+                        message: reason
+                    });
                 }
             }
 
@@ -158,12 +190,20 @@ class BookController {
                     const body  = `A student requested "${book.title || 'a book'}".`;
 
                     const messagePayload = {
-                        tokens,
+                        tokens: tokens,
                         notification: { title, body },
-                        data: { type: 'NEW_REQUEST', requestId: String(newRequestId), title, body },
+                        data: {
+                            type: 'NEW_REQUEST',
+                            requestId: String(newRequestId),
+                            title,
+                            body
+                        },
                         android: {
                             priority: 'high',
-                            notification: { channelId: 'library_requests', sound: 'default' }
+                            notification: {
+                                channelId: 'library_requests',
+                                sound: 'default'
+                            }
                         }
                     };
 
@@ -197,6 +237,7 @@ class BookController {
      *
      * FIX: copies borrow_date and due_date from the parent BORROW row so the
      * RETURN card on the student's screen shows a real due date instead of N/A.
+     * SCOPED: same institution guard on the underlying book.
      */
     static async requestReturn(req, res) {
         try {
@@ -308,16 +349,16 @@ class BookController {
             // FIX: copy borrow_date & due_date from parent BORROW row.
             const [result] = await pool.execute(
                 `INSERT INTO book_requests
-                   (user_id, book_id, request_type, status, request_date,
-                    related_request_id, notes, borrow_date, due_date)
-                 VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?, ?, ?, ?)`,
+                    (user_id, book_id, request_type, status, request_date,
+                     related_request_id, notes, borrow_date, due_date)
+                  VALUES (?, ?, 'RETURN', 'PENDING', NOW(), ?, ?, ?, ?)`,
                 [
                     userId,
                     bookId,
                     requestId,
                     'Return request for borrowed book',
                     borrowRequest.borrow_date || null,
-                    borrowRequest.due_date   || null
+                    borrowRequest.due_date    || null
                 ]
             );
 
@@ -340,6 +381,7 @@ class BookController {
     /**
      * Get all borrow requests for a specific user
      * GET /api/books/users/:id/borrows
+     * GET /api/books/user/:id/borrows
      */
     static async getUserBorrows(req, res) {
         try {
@@ -402,7 +444,6 @@ class BookController {
                 isbn: row.isbn || 'N/A',
                 status: row.status || 'PENDING',
                 requestDate: row.requestDate,
-                // Prefer own date; fall back to parent BORROW row.
                 borrowDate: row.borrowDate || row.parentBorrowDate || row.requestDate,
                 dueDate:    row.dueDate    || row.parentDueDate    || null,
                 category: row.category || 'General',
@@ -525,10 +566,6 @@ class BookController {
     /**
      * Approve a book request (BORROW or RETURN)
      * POST /api/librarian/requests/:id/approve
-     *
-     * NOTE: If your routes file wires this endpoint to LibrarianController.approveRequest
-     * instead, that version already has the same rules. This one is kept in parity so
-     * either wiring works identically.
      */
     static async approveRequest(req, res) {
         const connection = await pool.getConnection();
