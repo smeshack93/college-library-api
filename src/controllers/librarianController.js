@@ -127,6 +127,92 @@ class LibrarianController {
         }
     }
 
+    // ---------------------------------------------------------------
+    // NEW: Update the currently logged-in LIBRARIAN profile.
+    // PUT /api/librarian/profile
+    // Body: { username?, email?, phone? }
+    //
+    // Full Name, Employee ID, and NTA Level are intentionally NOT
+    // editable here — they are identity fields managed by the admin
+    // and mapped to the Android UI's `applyRoleVisibility()` which
+    // hides those rows for librarians on the Edit Profile screen.
+    // ---------------------------------------------------------------
+    static async updateProfile(req, res) {
+        try {
+            const librarianId = req.user && req.user.id;
+            if (!librarianId) {
+                return res.status(401).json({ success: false, message: 'Not authenticated' });
+            }
+
+            const { username, email, phone } = req.body || {};
+
+            const fields = [];
+            const values = [];
+
+            if (username !== undefined && username !== null && String(username).trim() !== '') {
+                fields.push('username = ?');
+                values.push(String(username).trim());
+            }
+            if (email !== undefined && email !== null && String(email).trim() !== '') {
+                fields.push('email = ?');
+                values.push(String(email).trim());
+            }
+            if (phone !== undefined && phone !== null) {
+                fields.push('phone = ?');
+                const trimmed = String(phone).trim();
+                values.push(trimmed === '' ? null : trimmed);
+            }
+
+            if (fields.length === 0) {
+                return res.status(400).json({ success: false, message: 'No changes to save' });
+            }
+
+            values.push(librarianId);
+
+            try {
+                await pool.execute(
+                    `UPDATE librarians SET ${fields.join(', ')} WHERE id = ? AND is_active = 1`,
+                    values
+                );
+            } catch (e) {
+                if (e && e.code === 'ER_DUP_ENTRY') {
+                    return res.status(409).json({
+                        success: false,
+                        message: 'Username or email already in use'
+                    });
+                }
+                throw e;
+            }
+
+            const [rows] = await pool.execute(
+                `SELECT id, username, full_name, employee_id, email, phone, institution
+                   FROM librarians WHERE id = ? AND is_active = 1`,
+                [librarianId]
+            );
+            const lib = rows[0];
+            if (!lib) {
+                return res.status(404).json({ success: false, message: 'Librarian not found' });
+            }
+
+            return res.json({
+                success: true,
+                message: 'Profile updated successfully',
+                librarian: {
+                    id: lib.id,
+                    username: lib.username,
+                    fullName: lib.full_name,
+                    employeeId: lib.employee_id,
+                    email: lib.email,
+                    phone: lib.phone || 'N/A',
+                    institution: lib.institution || ''
+                }
+            });
+        } catch (error) {
+            console.error('Librarian updateProfile error:', error);
+            return res.status(500).json({ success: false, message: 'Failed to update profile' });
+        }
+    }
+
     static async login(req, res) {
         try {
             const { username, password } = req.body;
