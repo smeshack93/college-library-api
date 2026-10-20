@@ -3,6 +3,7 @@ const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const LibrarianController = require('../controllers/librarianController');
 const { librarianAuth } = require('../middleware/auth');
+const { pool } = require('../config/database');
 
 // ---- Rate limiters (NEW) ----
 const librarianLoginLimiter = rateLimit({
@@ -58,6 +59,29 @@ router.post('/fcm-token', librarianAuth, LibrarianController.updateFcmToken);
  * @access  Private (Librarian only)
  */
 router.get('/profile', librarianAuth, LibrarianController.getProfile);
+
+/**
+ * @route   GET /api/librarian/institution-branding
+ * @desc    Get current librarian's institution branding info
+ * @access  Private (Librarian only)
+ */
+router.get('/institution-branding', librarianAuth, async (req, res) => {
+  try {
+    const institution = req.user.institution || null;
+    if (!institution) {
+      return res.json({ success: true, data: null });
+    }
+    const [rows] = await pool.execute(
+      `SELECT institution_name, logo_image_url, banner_image_url 
+         FROM institution_branding WHERE institution_name = ? LIMIT 1`,
+      [institution]
+    );
+    res.json({ success: true, data: rows[0] || null });
+  } catch (e) {
+    console.error('Librarian institution branding fetch error:', e);
+    res.status(500).json({ success: false, message: 'Failed to load branding' });
+  }
+});
 
 /**
  * @route   POST /api/librarian/verify-identity
