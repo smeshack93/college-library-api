@@ -68,6 +68,11 @@ app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// --- Static file serving for institution branding / book covers ---
+// Anything placed in ./public is reachable at /static/<path>
+// Example: public/images/logo.jpg  →  https://your-api.onrender.com/static/images/logo.jpg
+app.use('/static', express.static(path.join(__dirname, '../public')));
+
 // --- API Routes ---
 
 app.get('/', (req, res) => {
