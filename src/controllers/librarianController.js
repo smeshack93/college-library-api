@@ -1006,7 +1006,7 @@ class LibrarianController {
             }
             const {
                 title, author, isbn, category, level, quantity,
-                availableQuantity, publishedYear
+                availableQuantity, publishedYear, cover_image_url
             } = req.body;
 
             if (!title || !author || quantity === undefined) {
@@ -1020,7 +1020,8 @@ class LibrarianController {
                 availableQuantity: availableQuantity ?? quantity,
                 publishedYear: publishedYear ?? null,
                 institution,
-                createdBy: req.user.id
+                createdBy: req.user.id,
+                cover_image_url: cover_image_url ?? null
             });
             res.status(201).json({ success: true, message: 'Book added', bookId: id });
         } catch (e) {
