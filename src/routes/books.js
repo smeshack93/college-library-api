@@ -9,6 +9,7 @@ const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth')
 // ==========================================
 
 // Public read of the catalogue now requires login.
+// (Ensure your BookController.getAllBooks filters results by req.user.institution)
 router.get('/', authMiddleware, BookController.getAllBooks);
 
 // Specific POST action endpoints
