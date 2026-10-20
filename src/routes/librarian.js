@@ -61,6 +61,13 @@ router.post('/fcm-token', librarianAuth, LibrarianController.updateFcmToken);
 router.get('/profile', librarianAuth, LibrarianController.getProfile);
 
 /**
+ * @route   PUT /api/librarian/profile
+ * @desc    Update current librarian's profile info (username, email, phone)
+ * @access  Private (Librarian only)
+ */
+router.put('/profile', librarianAuth, LibrarianController.updateProfile);
+
+/**
  * @route   GET /api/librarian/institution-branding
  * @desc    Get current librarian's institution branding info
  * @access  Private (Librarian only)
