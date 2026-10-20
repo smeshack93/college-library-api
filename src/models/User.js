@@ -57,6 +57,47 @@ class User {
     return result.affectedRows > 0;
   }
 
+  // NEW: partial profile update for the currently logged-in student/admin.
+  // Only non-null, non-empty fields are written. Returns true if the row
+  // was actually updated, false if no valid fields were provided.
+  // Throws on ER_DUP_ENTRY — the caller (AuthController.updateProfile)
+  // translates that into HTTP 409.
+  static async updateProfile(userId, { username, email, fullName, phone, level }) {
+    const fields = [];
+    const values = [];
+
+    if (username !== undefined && username !== null && String(username).trim() !== '') {
+      fields.push('username = ?');
+      values.push(String(username).trim());
+    }
+    if (email !== undefined && email !== null && String(email).trim() !== '') {
+      fields.push('email = ?');
+      values.push(String(email).trim());
+    }
+    if (fullName !== undefined && fullName !== null && String(fullName).trim() !== '') {
+      fields.push('full_name = ?');
+      values.push(String(fullName).trim());
+    }
+    if (phone !== undefined && phone !== null) {
+      fields.push('phone = ?');
+      const trimmed = String(phone).trim();
+      values.push(trimmed === '' ? null : trimmed);
+    }
+    if (level !== undefined && level !== null && String(level).trim() !== '') {
+      fields.push('level = ?');
+      values.push(String(level));
+    }
+
+    if (fields.length === 0) return false;
+
+    values.push(userId);
+    const [result] = await pool.execute(
+      `UPDATE users SET ${fields.join(', ')} WHERE id = ? AND is_active = 1`,
+      values
+    );
+    return result.affectedRows > 0;
+  }
+
   static async updateFcmToken(userId, token) {
     const [result] = await pool.execute(
       'UPDATE users SET fcm_token = ? WHERE id = ?',
