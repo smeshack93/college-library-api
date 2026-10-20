@@ -441,6 +441,92 @@ class AuthController {
     }
   }
 
+  // ---------------------------------------------------------------
+  // NEW: Update the currently logged-in STUDENT or ADMIN profile.
+  // PUT /api/auth/profile
+  // Body: { username?, email?, fullName?, phone?, level? }
+  // ---------------------------------------------------------------
+  static async updateProfile(req, res) {
+    try {
+      const userId = req.user && req.user.id;
+      const accountType = String(
+        (req.user && (req.user.type || req.user.role)) || 'STUDENT'
+      ).toUpperCase();
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: 'Not authenticated' });
+      }
+      if (accountType === 'LIBRARIAN') {
+        return res.status(403).json({
+          success: false,
+          message: 'Use PUT /api/librarian/profile for librarian accounts'
+        });
+      }
+
+      const { username, email, fullName, phone, level } = req.body || {};
+
+      // Validate level against the same whitelist used by register().
+      let normalizedLevel = undefined;
+      if (level !== undefined && level !== null && String(level).trim() !== '') {
+        const allowedLevels = [
+          'NTA Level 4', 'NTA Level 5', 'NTA Level 6',
+          'NVA', 'Secretarial', 'Degree', 'Masters', 'PhD', 'Others'
+        ];
+        if (!allowedLevels.includes(String(level))) {
+          return res.status(400).json({ success: false, message: 'Invalid Education Level' });
+        }
+        normalizedLevel = String(level);
+      }
+
+      let ok = false;
+      try {
+        ok = await User.updateProfile(userId, {
+          username,
+          email,
+          fullName,
+          phone,
+          level: normalizedLevel
+        });
+      } catch (e) {
+        if (e && e.code === 'ER_DUP_ENTRY') {
+          return res.status(409).json({
+            success: false,
+            message: 'Username or email already in use'
+          });
+        }
+        throw e;
+      }
+
+      if (!ok) {
+        return res.status(400).json({ success: false, message: 'No changes to save' });
+      }
+
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Profile updated successfully',
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          full_name: user.full_name,
+          level: user.level || '',
+          phone: user.phone || '',
+          institution: user.institution || '',
+          college: user.institution || '',
+          role: (user.role || 'STUDENT').toUpperCase()
+        }
+      });
+    } catch (error) {
+      console.error('updateProfile error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to update profile' });
+    }
+  }
+
   static async logout(req, res) {
     try {
       const payload = req.user;
