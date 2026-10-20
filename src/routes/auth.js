@@ -3,7 +3,7 @@ const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const AuthController = require('../controllers/authController');
-const { optionalAuthMiddleware } = require('../middleware/auth');
+const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth');
 const PasswordPolicy = require('../utils/passwordPolicy');
 
 const validateRequest = (req, res, next) => {
@@ -137,6 +137,11 @@ const changePasswordValidation = [
 
 router.post('/change-password', changePasswordValidation, AuthController.changePassword);
 router.put('/change-password', changePasswordValidation, AuthController.changePassword);
+
+// NEW: profile update for the currently logged-in STUDENT or ADMIN.
+// Uses authMiddleware (not optionalAuthMiddleware) so the request is
+// fully authenticated AND session-validated before touching the row.
+router.put('/profile', authMiddleware, AuthController.updateProfile);
 
 router.post('/logout', optionalAuthMiddleware, AuthController.logout);
 
