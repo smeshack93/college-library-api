@@ -30,17 +30,17 @@ class Book {
 
   static async create({
     title, author, isbn, category, level, quantity,
-    availableQuantity, publishedYear, institution, createdBy
+    availableQuantity, publishedYear, institution, createdBy, cover_image_url
   }) {
     const [r] = await pool.execute(
       `INSERT INTO books
          (title, author, isbn, category, level, quantity, available_quantity,
-          published_year, institution, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          published_year, institution, created_by, cover_image_url, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         title, author, isbn, category, level,
         quantity, availableQuantity ?? quantity,
-        publishedYear ?? null, institution ?? null, createdBy ?? null
+        publishedYear ?? null, institution ?? null, createdBy ?? null, cover_image_url ?? null
       ]
     );
     return r.insertId;
@@ -48,7 +48,7 @@ class Book {
 
   static async update(id, fields) {
     const allowed = ['title','author','isbn','category','level','quantity',
-                     'available_quantity','published_year','institution'];
+                     'available_quantity','published_year','institution','cover_image_url'];
     const keys = Object.keys(fields).filter(k => allowed.includes(k));
     if (keys.length === 0) return false;
     const sets = keys.map(k => `${k} = ?`).join(', ');
