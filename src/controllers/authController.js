@@ -5,6 +5,7 @@ const Librarian = require('../models/Librarian');
 const { sendResetEmail } = require('../config/email');
 const { verifyPassword, hashPassword } = require('../utils/passwordUtils');
 const LoginLockout = require('../utils/loginLockout');
+const { pool } = require('../config/database');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
@@ -23,6 +24,30 @@ class AuthController {
         return res.status(400).json({
           success: false,
           message: 'Identifier and password required'
+        });
+      }
+
+      // ============================================================
+      // NEW STEP 0 — Determine whether the identifier exists at all
+      // and whether the matching row is active. This runs BEFORE the
+      // current flow so we can surface distinct messages:
+      //   - account does not exist  -> 404 ACCOUNT_NOT_FOUND
+      //   - account is deactivated  -> 403 ACCOUNT_DEACTIVATED
+      // Existing happy-path logic below is untouched.
+      // ============================================================
+      const identity = await AuthController._resolveIdentity(identifier);
+      if (identity.state === 'MISSING') {
+        return res.status(404).json({
+          success: false,
+          code: 'ACCOUNT_NOT_FOUND',
+          message: 'Account does not exist. Please register to create a new account.'
+        });
+      }
+      if (identity.state === 'INACTIVE') {
+        return res.status(403).json({
+          success: false,
+          code: 'ACCOUNT_DEACTIVATED',
+          message: 'Your account has been deactivated. Please contact the system administrator for assistance.'
         });
       }
 
@@ -154,6 +179,39 @@ class AuthController {
     }
   }
 
+  // ==============================================================
+  // NEW HELPER — determine whether an identifier belongs to any
+  // account (user or librarian), ignoring the is_active filter, so
+  // the controller can return a distinct message for "missing"
+  // vs "deactivated".
+  //
+  // Returns:
+  //   { state: 'ACTIVE'   }  -> continue with the normal login flow
+  //   { state: 'INACTIVE' }  -> respond 403 ACCOUNT_DEACTIVATED
+  //   { state: 'MISSING'  }  -> respond 404 ACCOUNT_NOT_FOUND
+  // ==============================================================
+  static async _resolveIdentity(identifier) {
+    const [userRows] = await pool.execute(
+      `SELECT id, is_active FROM users
+        WHERE email = ? OR username = ? LIMIT 1`,
+      [identifier, identifier]
+    );
+    if (userRows.length > 0) {
+      return userRows[0].is_active ? { state: 'ACTIVE' } : { state: 'INACTIVE' };
+    }
+
+    const [libRows] = await pool.execute(
+      `SELECT id, is_active FROM librarians
+        WHERE username = ? OR email = ? OR employee_id = ? LIMIT 1`,
+      [identifier, identifier, identifier]
+    );
+    if (libRows.length > 0) {
+      return libRows[0].is_active ? { state: 'ACTIVE' } : { state: 'INACTIVE' };
+    }
+
+    return { state: 'MISSING' };
+  }
+
   static async register(req, res) {
     try {
       const { username, email, fullName, password, level, ntaLevel, phone, college, institution } = req.body;
@@ -184,6 +242,31 @@ class AuthController {
         return res.status(400).json({
           success: false,
           message: 'Password must be at least 8 characters'
+        });
+      }
+
+      // ============================================================
+      // NEW STEP 1 — Full duplicate check across username / email /
+      // phone for users (regardless of is_active) AND against
+      // librarians' email/username. If any field collides, return a
+      // single friendly message instructing the user to contact the
+      // system administrator.
+      //
+      // This runs BEFORE the existing User.findByEmail check so the
+      // latter never masks a deactivated-account collision.
+      // ============================================================
+      const duplicate = await AuthController._findDuplicateRegistrationField({
+        username,
+        email,
+        phone
+      });
+      if (duplicate) {
+        return res.status(409).json({
+          success: false,
+          code: 'DUPLICATE_REGISTRATION',
+          field: duplicate,
+          message: 'An account with these details already exists. ' +
+                   'Please contact the system administrator for assistance.'
         });
       }
 
@@ -230,6 +313,43 @@ class AuthController {
         message: 'Registration failed'
       });
     }
+  }
+
+  // ==============================================================
+  // NEW HELPER — return the name of the first colliding field
+  // ('username' | 'email' | 'phone' | 'librarian') or null when all
+  // are free. Ignores is_active, so a deactivated account still
+  // blocks re-registration with the same details — the user is
+  // directed to the admin instead of silently duplicating rows.
+  // ==============================================================
+  static async _findDuplicateRegistrationField({ username, email, phone }) {
+    // 1) users table
+    const [userRows] = await pool.execute(
+      `SELECT username, email, phone FROM users
+        WHERE username = ? OR email = ? OR (phone IS NOT NULL AND phone = ?)
+        LIMIT 1`,
+      [username, email, phone || null]
+    );
+    if (userRows.length > 0) {
+      const row = userRows[0];
+      if (row.username === username) return 'username';
+      if (row.email === email) return 'email';
+      if (phone && row.phone === phone) return 'phone';
+    }
+
+    // 2) librarians table — protect against email/username reuse
+    const [libRows] = await pool.execute(
+      `SELECT username, email FROM librarians
+        WHERE username = ? OR email = ? LIMIT 1`,
+      [username, email]
+    );
+    if (libRows.length > 0) {
+      const row = libRows[0];
+      if (row.username === username) return 'username';
+      if (row.email === email) return 'email';
+    }
+
+    return null;
   }
 
   static async forgotPassword(req, res) {
