@@ -6,22 +6,35 @@ const { pool } = require('../config/database');
 
 router.use(adminAuth);
 
-// Institution Branding Management
+// ============================================================
+// Institution Branding (admin drill-down & management)
+// ============================================================
 router.get('/institution-branding', async (req, res) => {
   try {
-    const institution = req.user.institution || null;
+    const institution = (req.query.institution || '').toString().trim();
     if (!institution) {
-      return res.json({ success: true, data: null });
+      return res.status(400).json({
+        success: false,
+        message: 'institution query parameter required'
+      });
     }
     const [rows] = await pool.execute(
-      `SELECT institution_name, logo_image_url, banner_image_url 
-         FROM institution_branding WHERE institution_name = ? LIMIT 1`,
+      `SELECT institution_name, logo_image_url, banner_image_url
+         FROM institution_branding
+        WHERE institution_name = ?
+        LIMIT 1`,
       [institution]
     );
-    res.json({ success: true, data: rows[0] || null });
+    res.json({
+      success: true,
+      data: rows && rows.length > 0 ? rows[0] : null
+    });
   } catch (e) {
-    console.error('Admin institution branding fetch error:', e);
-    res.status(500).json({ success: false, message: 'Failed to load branding' });
+    console.error('Admin institution-branding error:', e);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to load branding'
+    });
   }
 });
 
