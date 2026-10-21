@@ -82,6 +82,12 @@ class AdminController {
 
   static async setUserActive(req, res) {
     try {
+      // NEW: Prevent deactivation of ADMIN accounts
+      const [[targetUser]] = await pool.execute('SELECT role FROM users WHERE id = ?', [req.params.id]);
+      if (targetUser && targetUser.role === 'ADMIN') {
+        return res.status(403).json({ success: false, message: 'Admin accounts cannot be deactivated.' });
+      }
+
       const ok = await User.setActive(req.params.id, !!req.body.active);
       if (!ok) return res.status(404).json({ success: false, message: 'User not found' });
       res.json({ success: true });
@@ -92,6 +98,12 @@ class AdminController {
 
   static async deleteUser(req, res) {
     try {
+      // NEW: Prevent deletion of ADMIN accounts
+      const [[targetUser]] = await pool.execute('SELECT role FROM users WHERE id = ?', [req.params.id]);
+      if (targetUser && targetUser.role === 'ADMIN') {
+        return res.status(403).json({ success: false, message: 'Admin accounts cannot be deleted.' });
+      }
+
       const ok = await User.deleteById(req.params.id);
       if (!ok) return res.status(404).json({ success: false, message: 'User not found' });
       res.json({ success: true });
