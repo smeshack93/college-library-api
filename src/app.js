@@ -4,6 +4,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
 const admin = require('firebase-admin');
+const cookieParser = require('cookie-parser');   // NEW
 
 // 1. Load environment variables from ca.env BEFORE anything else
 require('dotenv').config({ path: path.resolve(__dirname, '../ca.env') });
@@ -50,23 +51,24 @@ try {
 // --- Middleware ---
 app.use(helmet());
 
-// NEW: CORS narrowed to specific origins. The Android app is not
-// affected by CORS (native HTTP clients don't send an Origin header
-// and don't enforce CORS). If you open the API from a web UI, add the
-// origin here. To revert to the previous wide-open behaviour, replace
-// this whole block with `app.use(cors());`.
+// CHANGED: credentials:true so the browser will attach the httpOnly
+// cookie on cross-origin requests. Web-app origin added.
+// Android is unaffected — OkHttp ignores CORS entirely.
 app.use(cors({
   origin: [
     'https://college-library-api-xyb6.onrender.com',
     'http://localhost:3000',
-    'http://localhost:5173'
+    'http://localhost:5173',
+    'http://localhost:4173',             // NEW: Vite preview
+    'https://your-web-app.vercel.app'    // NEW: replace when deployed
   ],
-  credentials: false
+  credentials: true
 }));
 
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());                  // NEW: after body parsers
 
 // --- Static file serving for institution branding / book covers ---
 // Anything placed in ./public is reachable at /static/<path>
