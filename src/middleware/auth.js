@@ -4,10 +4,30 @@ const { pool } = require('../config/database');
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
 /**
- * Verifies the JWT, then confirms the token's session id (sid) still
- * matches the current_session_id stored on the account row. If they
- * don't match, the token has been superseded by a newer login and the
- * request is rejected with 401.
+ * Extracts the bearer token from either:
+ *   - the Authorization header (Android, existing behavior), OR
+ *   - the `token` httpOnly cookie (new web path).
+ *
+ * Android requests never carry cookies, so its behavior is identical.
+ */
+function extractToken(req) {
+  const authHeader = req.header('Authorization');
+  if (authHeader) {
+    return authHeader.replace(/^Bearer\s+/i, '').trim() || null;
+  }
+  if (req.cookies && req.cookies.token) {
+    return String(req.cookies.token).trim() || null;
+  }
+  return null;
+}
+
+/**
+ * Verifies the JWT and confirms the sid still matches the DB row.
+ *
+ * NEW: the sid is checked against `current_session_web` when the
+ * token's `platform` is 'WEB', otherwise against `current_session_id`.
+ * Older tokens issued before this change have no `platform` field and
+ * therefore keep using `current_session_id` — Android unaffected.
  */
 async function verifyAndCheckSession(token) {
   const payload = jwt.verify(token, JWT_SECRET);
@@ -15,18 +35,18 @@ async function verifyAndCheckSession(token) {
   if (!payload || !payload.id) {
     return { ok: false, reason: 'no-id' };
   }
-
-  // Tokens issued before the session-id feature have no `sid`. Treat
-  // them as invalid so they cannot bypass the new check.
   if (!payload.sid) {
     return { ok: false, reason: 'no-sid' };
   }
 
   const role = String(payload.type || payload.role || '').toUpperCase();
   const table = role === 'LIBRARIAN' ? 'librarians' : 'users';
+  const sessionColumn = payload.platform === 'WEB'
+    ? 'current_session_web'
+    : 'current_session_id';
 
   const [rows] = await pool.execute(
-    `SELECT current_session_id FROM ${table} WHERE id = ? LIMIT 1`,
+    `SELECT ${sessionColumn} AS stored_sid FROM ${table} WHERE id = ? LIMIT 1`,
     [payload.id]
   );
 
@@ -34,7 +54,7 @@ async function verifyAndCheckSession(token) {
     return { ok: false, reason: 'no-row' };
   }
 
-  const stored = rows[0].current_session_id;
+  const stored = rows[0].stored_sid;
   if (!stored || stored !== payload.sid) {
     return { ok: false, reason: 'sid-mismatch' };
   }
@@ -43,9 +63,10 @@ async function verifyAndCheckSession(token) {
 }
 
 const authMiddleware = async (req, res, next) => {
-  const authHeader = req.header('Authorization');
-  const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : null;
-  if (!token) return res.status(401).json({ success: false, message: 'No token, authorization denied' });
+  const token = extractToken(req);
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'No token, authorization denied' });
+  }
   try {
     const result = await verifyAndCheckSession(token);
     if (!result.ok) {
@@ -59,12 +80,9 @@ const authMiddleware = async (req, res, next) => {
 };
 
 const optionalAuthMiddleware = (req, res, next) => {
-  const authHeader = req.header('Authorization');
-  const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : null;
+  const token = extractToken(req);
   if (token) {
     try {
-      // Only verify the JWT here — the session check is deliberately
-      // skipped on public routes so a stale token behaves like a guest.
       req.user = jwt.verify(token, JWT_SECRET);
     } catch {
       req.user = null;
