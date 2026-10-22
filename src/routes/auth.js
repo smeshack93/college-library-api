@@ -158,4 +158,5 @@ router.post('/refresh', authMiddleware, AuthController.refresh);
 
 router.get('/me', authMiddleware, AuthController.me);
 
+
 module.exports = router;
