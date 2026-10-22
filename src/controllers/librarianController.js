@@ -929,6 +929,15 @@ class LibrarianController {
         }
     }
 
+      // ============================================================
+    // UPDATED — POST /api/librarian/reset-password
+    //
+    // Now nulls BOTH current_session_id and current_session_web so
+    // that a self-service password reset kicks out Android AND web
+    // sessions for that librarian. The response body is unchanged
+    // (still `{ success: true, message: 'Password reset successfully.' }`),
+    // so no Android caller needs to change.
+    // ============================================================
     static async resetPassword(req, res) {
         try {
             const { username, employeeId, newPassword } = req.body;
@@ -960,8 +969,13 @@ class LibrarianController {
                 [passwordHash, rows[0].id]
             );
 
+            // CHANGED: nulls BOTH session columns so both Android
+            // and web sessions are invalidated at once.
             await pool.execute(
-                'UPDATE librarians SET current_session_id = NULL WHERE id = ?',
+                `UPDATE librarians
+                    SET current_session_id = NULL,
+                        current_session_web = NULL
+                  WHERE id = ?`,
                 [rows[0].id]
             );
 
