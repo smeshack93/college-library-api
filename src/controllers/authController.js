@@ -19,7 +19,7 @@ class AuthController {
     try {
       const identifier = (req.body.identifier || req.body.email || req.body.username || '').trim();
       const { password } = req.body;
-      
+
       const platform = String(req.body.platform || 'MOBILE').toUpperCase() === 'WEB'
         ? 'WEB' : 'MOBILE';
 
@@ -86,7 +86,7 @@ class AuthController {
         );
 
         if (platform === 'WEB') {
-          AuthController._setAuthCookie(res, token);
+          AuthController._setAuthCookie(res, token, 7 * 24 * 60 * 60 * 1000);
         }
 
         return res.json({
@@ -153,7 +153,7 @@ class AuthController {
         );
 
         if (platform === 'WEB') {
-          AuthController._setAuthCookie(res, token);
+          AuthController._setAuthCookie(res, token, 24 * 60 * 60 * 1000);
         }
 
         return res.json({
@@ -181,6 +181,97 @@ class AuthController {
     }
   }
 
+  // ============================================================
+  // NEW — POST /api/auth/refresh
+  //
+  // Rotates the sid, issues a fresh JWT with the SAME platform and
+  // expiry policy as the original token, and (for WEB) refreshes
+  // the httpOnly cookie. Requires an already-valid token in the
+  // Authorization header OR the token cookie. authMiddleware has
+  // already validated it before this runs, so `req.user` is
+  // trustworthy.
+  //
+  // Android behavior: no Android caller hits this today. If it ever
+  // does, the response is a plain JSON token payload that mirrors
+  // the login response — the Android DTO would need a small field
+  // added. Not required for Step 2.
+  // ============================================================
+  static async refresh(req, res) {
+    try {
+      const payload = req.user || {};
+      const accountId = payload.id;
+      const role = String(payload.type || payload.role || '').toUpperCase();
+      const platform = payload.platform === 'WEB' ? 'WEB' : 'MOBILE';
+
+      if (!accountId) {
+        return res.status(401).json({ success: false, message: 'Not authenticated' });
+      }
+
+      const table = role === 'LIBRARIAN' ? 'librarians' : 'users';
+      const sid = newSessionId();
+      await AuthController._storeSession(table, accountId, sid, platform);
+
+      const expiresIn = role === 'LIBRARIAN' ? '24h' : '7d';
+      const maxAgeMs = role === 'LIBRARIAN'
+        ? 24 * 60 * 60 * 1000
+        : 7 * 24 * 60 * 60 * 1000;
+
+      const token = jwt.sign(
+        { ...payload, sid, platform },
+        JWT_SECRET,
+        { expiresIn }
+      );
+
+      if (platform === 'WEB') {
+        AuthController._setAuthCookie(res, token, maxAgeMs);
+      }
+
+      return res.json({
+        success: true,
+        token,
+        role,
+        platform
+      });
+    } catch (e) {
+      console.error('Refresh error:', e);
+      return res.status(500).json({ success: false, message: 'Failed to refresh session' });
+    }
+  }
+
+  // ============================================================
+  // NEW — GET /api/auth/me
+  //
+  // Returns the decoded payload for the currently authenticated
+  // caller. The web app uses this on page load (after a cookie
+  // restore) to hydrate the UI without a client-side token store.
+  //
+  // Android today does not call this, so no DTO changes are needed.
+  // ============================================================
+  static async me(req, res) {
+    try {
+      const p = req.user || {};
+      return res.json({
+        success: true,
+        user: {
+          id: p.id,
+          username: p.username || null,
+          email: p.email || null,
+          role: p.role || null,
+          type: p.type || p.role || null,
+          institution: p.institution || null,
+          employeeId: p.employeeId || null,
+          platform: p.platform || 'MOBILE'
+        }
+      });
+    } catch (e) {
+      return res.status(500).json({ success: false, message: 'Failed to load session' });
+    }
+  }
+
+  // ============================================================
+  // Helpers (unchanged signatures, one new method)
+  // ============================================================
+
   static async _storeSession(table, accountId, sid, platform) {
     const column = platform === 'WEB' ? 'current_session_web' : 'current_session_id';
     await pool.execute(
@@ -189,15 +280,36 @@ class AuthController {
     );
   }
 
-  static _setAuthCookie(res, token) {
+  // NEW: nulls BOTH session columns. Used by changePassword and
+  // resetPassword so a password change kicks out Android AND web
+  // sessions. Android callers see the intended forced logout.
+  static async _clearAllSessions(table, accountId) {
+    await pool.execute(
+      `UPDATE ${table}
+          SET current_session_id = NULL,
+              current_session_web = NULL
+        WHERE id = ?`,
+      [accountId]
+    );
+  }
+
+  static _setAuthCookie(res, token, maxAgeMs) {
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: maxAgeMs || 7 * 24 * 60 * 60 * 1000,
       path: '/'
     });
   }
+
+  static _clearAuthCookie(res) {
+    res.clearCookie('token', { path: '/' });
+  }
+
+  // ============================================================
+  // Existing helpers — byte-identical to Step 1
+  // ============================================================
 
   static async _resolveIdentity(identifier) {
     const [userRows] = await pool.execute(
@@ -426,7 +538,8 @@ class AuthController {
           });
         }
 
-        await Librarian.clearCurrentSession(lib.id);
+        // CHANGED: now clears BOTH sessions
+        await AuthController._clearAllSessions('librarians', lib.id);
 
         return res.json({
           success: true,
@@ -460,7 +573,9 @@ class AuthController {
       const hashedPassword = hashPassword(newPassword);
       await User.updatePassword(user.id, hashedPassword);
       await User.clearResetToken(user.id);
-      await User.clearCurrentSession(user.id);
+
+      // CHANGED: now clears BOTH sessions
+      await AuthController._clearAllSessions('users', user.id);
 
       res.json({
         success: true,
@@ -532,10 +647,12 @@ class AuthController {
 
       if (isLibrarian) {
         await Librarian.updatePassword(account.id, hashedPassword);
-        await Librarian.clearCurrentSession(account.id);
+        // CHANGED: now clears BOTH sessions
+        await AuthController._clearAllSessions('librarians', account.id);
       } else {
         await User.updatePassword(account.id, hashedPassword);
-        await User.clearCurrentSession(account.id);
+        // CHANGED: now clears BOTH sessions
+        await AuthController._clearAllSessions('users', account.id);
       }
 
       return res.json({
@@ -631,20 +748,39 @@ class AuthController {
     }
   }
 
+  // ============================================================
+  // UPDATED — POST /api/auth/logout
+  //
+  // Now:
+  //   1. Clears the caller's platform-specific session column only.
+  //      (Android logs out of Android; web logs out of web — the
+  //      other session keeps working, matching the design where a
+  //      user can be on both at once.)
+  //   2. Always clears the `token` cookie. Harmless for Android
+  //      because Android never received one.
+  //
+  // Android response: identical body `{ success: true, message:
+  // 'Logged out.' }`. No behavioral change.
+  // ============================================================
   static async logout(req, res) {
     try {
+      // Always clear the cookie (harmless for callers that never had one).
+      AuthController._clearAuthCookie(res);
+
       const payload = req.user;
       if (!payload || !payload.id) {
         return res.json({ success: true, message: 'Logged out.' });
       }
 
       const role = String(payload.type || payload.role || '').toUpperCase();
+      const platform = payload.platform === 'WEB' ? 'WEB' : 'MOBILE';
+      const table = role === 'LIBRARIAN' ? 'librarians' : 'users';
+      const column = platform === 'WEB' ? 'current_session_web' : 'current_session_id';
 
-      if (role === 'LIBRARIAN') {
-        await Librarian.clearCurrentSession(payload.id);
-      } else {
-        await User.clearCurrentSession(payload.id);
-      }
+      await pool.execute(
+        `UPDATE ${table} SET ${column} = NULL WHERE id = ?`,
+        [payload.id]
+      );
 
       return res.json({ success: true, message: 'Logged out.' });
     } catch (error) {
