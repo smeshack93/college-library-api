@@ -216,6 +216,8 @@ class LibrarianController {
     static async login(req, res) {
         try {
             const { username, password } = req.body;
+            const platform = String(req.body.platform || 'MOBILE').toUpperCase() === 'WEB'
+                ? 'WEB' : 'MOBILE';
 
             if (!username || !password) {
                 return res.status(400).json({
@@ -261,7 +263,12 @@ class LibrarianController {
             await LoginLockout.clearLock('librarians', librarian.id);
 
             const sid = crypto.randomBytes(32).toString('hex');
-            await pool.execute('UPDATE librarians SET current_session_id = ? WHERE id = ?', [sid, librarian.id]);
+            // NEW: write the sid to the platform-specific column.
+            const sessionColumn = platform === 'WEB' ? 'current_session_web' : 'current_session_id';
+            await pool.execute(
+                `UPDATE librarians SET ${sessionColumn} = ? WHERE id = ?`,
+                [sid, librarian.id]
+            );
 
             const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
@@ -273,11 +280,23 @@ class LibrarianController {
                     institution: librarian.institution || null,
                     type: 'LIBRARIAN',
                     role: 'librarian',
-                    sid
+                    sid,
+                    platform // NEW
                 },
                 JWT_SECRET,
                 { expiresIn: '24h' }
             );
+
+            // NEW: set cookie for web callers only.
+            if (platform === 'WEB') {
+                res.cookie('token', token, {
+                    httpOnly: true,
+                    secure: process.env.NODE_ENV === 'production',
+                    sameSite: 'strict',
+                    maxAge: 24 * 60 * 60 * 1000,
+                    path: '/'
+                });
+            }
 
             res.json({
                 success: true,
@@ -1081,23 +1100,6 @@ class LibrarianController {
         }
     }
 
-    // ================================================================
-    // UPDATED: addBook performs a per-institution duplicate check
-    // BEFORE inserting. Two rows are considered "the same book" when:
-    //
-    //   1. Both have the same ISBN (when the incoming book supplies
-    //      an ISBN), OR
-    //   2. Both have the same normalized title + author (case- and
-    //      whitespace-insensitive), when no ISBN is provided.
-    //
-    // The check is scoped to the librarian's institution so other
-    // institutions are unaffected. If a duplicate is found, the
-    // controller returns HTTP 409 with a friendly message. No row
-    // is inserted in that case.
-    //
-    // Everything else (payload validation, Book.create call, response
-    // shape, catch block) is exactly as it was before.
-    // ================================================================
     static async addBook(req, res) {
         try {
             const institution = req.user?.institution || req.body.institution || null;
@@ -1116,7 +1118,6 @@ class LibrarianController {
                 return res.status(400).json({ success: false, message: 'title, author, quantity required' });
             }
 
-            // ---- NEW: per-institution duplicate check ----
             const duplicate = await LibrarianController._findDuplicateBook({
                 institution,
                 title,
@@ -1134,7 +1135,6 @@ class LibrarianController {
                     existingBookId: duplicate.id
                 });
             }
-            // ---- end NEW ----
 
             const Book = require('../models/Book');
             const id = await Book.create({
@@ -1152,23 +1152,6 @@ class LibrarianController {
         }
     }
 
-    // ==============================================================
-    // NEW HELPER — find an existing book in the same institution
-    // that matches the incoming title/author/isbn. Returns the row
-    // (id, title, author, isbn) or null when nothing matches.
-    //
-    // Matching rules (in priority order):
-    //   1. If `isbn` is supplied and non-blank, match on
-    //         isbn = ?  AND  institution = ?
-    //      (ISBN is globally unique and the strongest signal.)
-    //   2. Otherwise match on normalized title + author:
-    //         LOWER(TRIM(title))  = LOWER(TRIM(?))
-    //      AND LOWER(TRIM(author)) = LOWER(TRIM(?))
-    //      AND institution = ?
-    //
-    // Rows with a NULL institution are never matched, so orphaned
-    // legacy data cannot block adding a book to a real institution.
-    // ==============================================================
     static async _findDuplicateBook({ institution, title, author, isbn }) {
         const trimmedIsbn = (isbn || '').toString().trim();
         if (trimmedIsbn !== '') {
@@ -1230,7 +1213,6 @@ class LibrarianController {
             if (institution && rows[0].institution && rows[0].institution !== institution) {
                 return res.status(403).json({ success: false, message: 'Not your institution' });
             }
-            // FK guard — refuse to delete books with borrowing history
             const [[{ count }]] = await pool.execute(
                 'SELECT COUNT(*) AS count FROM book_requests WHERE book_id = ?',
                 [req.params.id]
