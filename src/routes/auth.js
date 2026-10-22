@@ -18,9 +18,6 @@ const validateRequest = (req, res, next) => {
   next();
 };
 
-// NEW: express-validator custom validator for password strength.
-// Uses the same regex as the Android PasswordValidator, so client and
-// server can never drift apart.
 const passwordStrengthValidator = body('password').custom((value) => {
   if (!PasswordPolicy.isValid(value)) {
     throw new Error(PasswordPolicy.requirementShort());
@@ -35,7 +32,7 @@ const newPasswordStrengthValidator = body('newPassword').custom((value) => {
   return true;
 });
 
-// ---- Rate limiters ----
+// ---- Rate limiters (UNCHANGED) ----
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -80,7 +77,7 @@ const resetPasswordLimiter = rateLimit({
   }
 });
 
-// --- Authentication Routes ---
+// --- Authentication Routes (unchanged) ---
 
 router.post('/login', loginLimiter, [
   body().custom((value, { req }) => {
@@ -98,7 +95,7 @@ router.post('/register', registerLimiter, [
   body('username').notEmpty().withMessage('Username is required').trim(),
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('fullName').notEmpty().withMessage('Full name is required').trim(),
-  passwordStrengthValidator,          // NEW: server-side strength check
+  passwordStrengthValidator,
   body('level').optional().trim(),
   body('ntaLevel').optional().trim(),
   body('phone').optional().trim(),
@@ -123,7 +120,7 @@ router.post('/reset-password', resetPasswordLimiter, [
     }
     return true;
   }),
-  newPasswordStrengthValidator,       // NEW: server-side strength check
+  newPasswordStrengthValidator,
   validateRequest
 ], AuthController.resetPassword);
 
@@ -131,18 +128,34 @@ const changePasswordValidation = [
   optionalAuthMiddleware,
   body('userId').optional().isInt({ min: 1 }).withMessage('Valid userId is required'),
   body('currentPassword').notEmpty().withMessage('Current password is required'),
-  newPasswordStrengthValidator,       // NEW: same check on change-password
+  newPasswordStrengthValidator,
   validateRequest
 ];
 
 router.post('/change-password', changePasswordValidation, AuthController.changePassword);
 router.put('/change-password', changePasswordValidation, AuthController.changePassword);
 
-// NEW: profile update for the currently logged-in STUDENT or ADMIN.
-// Uses authMiddleware (not optionalAuthMiddleware) so the request is
-// fully authenticated AND session-validated before touching the row.
 router.put('/profile', authMiddleware, AuthController.updateProfile);
 
+// ============================================================
+// NEW: cookie-aware logout. Uses optionalAuthMiddleware so that
+// a request without a valid token still returns success — the
+// point of logout is to end the session, not to be authenticated.
+// The controller handles both Bearer and cookie paths.
+// ============================================================
 router.post('/logout', optionalAuthMiddleware, AuthController.logout);
+
+// ============================================================
+// NEW: Web-support endpoints. authMiddleware guards both, so
+// both Android and web callers can use them. No rate limiter
+// (already authenticated; refresh is not a brute-force surface).
+//
+// Android does not call these today. Nothing about its behavior
+// changes because the endpoints do not exist in Android's API
+// surface (com.library.data.api.ApiService).
+// ============================================================
+router.post('/refresh', authMiddleware, AuthController.refresh);
+
+router.get('/me', authMiddleware, AuthController.me);
 
 module.exports = router;
