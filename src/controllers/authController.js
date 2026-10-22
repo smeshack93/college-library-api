@@ -15,7 +15,62 @@ function newSessionId() {
 
 class AuthController {
 
-  static async login(req, res) {    try {      const identifier = (req.body.identifier || req.body.email || req.body.username || '').trim();      const { password } = req.body;      // NEW: platform hint. Android sends nothing -> 'MOBILE'.      // Web sends { platform: 'WEB' } and receives a Set-Cookie      // in addition to the JSON token (which it can ignore or use      // in memory).      const platform = String(req.body.platform || 'MOBILE').toUpperCase() === 'WEB'        ? 'WEB' : 'MOBILE';      if (!identifier || !password) {        return res.status(400).json({          success: false,          message: 'Identifier and password required'        });      }      const identity = await AuthController._resolveIdentity(identifier);      if (identity.state === 'MISSING') {        return res.status(404).json({          success: false,          code: 'ACCOUNT_NOT_FOUND',          message: 'Account does not exist. Please register to create a new account.'        });      }      if (identity.state === 'INACTIVE') {        return res.status(403).json({          success: false,          code: 'ACCOUNT_DEACTIVATED',          message: 'Your account has been deactivated. Please contact the system administrator for assistance.'        });      }      // 1. Try users table (STUDENT or ADMIN)      let user = await User.findByEmail(identifier);      if (!user) user = await User.findByUsername(identifier);      if (user) {        const lock = await LoginLockout.checkLocked('users', user.id);        if (lock.locked) {          return res.status(423).json({            success: false,            message: `Account is temporarily locked due to repeated failed login attempts. Try again after ${new Date(lock.until).toLocaleTimeString()}.`          });        }        if (!verifyPassword(password, user.password)) {          await LoginLockout.registerFailure('users', user.id);          return res.status(401).json({ success: false, message: 'Invalid credentials' });        }        await LoginLockout.clearLock('users', user.id);        const role = (user.role || 'STUDENT').toUpperCase();        const sid = newSessionId();        await AuthController._storeSession('users', user.id, sid, platform);        const token = jwt.sign(
+  static async login(req, res) {
+    try {
+      const identifier = (req.body.identifier || req.body.email || req.body.username || '').trim();
+      const { password } = req.body;
+      
+      const platform = String(req.body.platform || 'MOBILE').toUpperCase() === 'WEB'
+        ? 'WEB' : 'MOBILE';
+
+      if (!identifier || !password) {
+        return res.status(400).json({
+          success: false,
+          message: 'Identifier and password required'
+        });
+      }
+
+      const identity = await AuthController._resolveIdentity(identifier);
+      if (identity.state === 'MISSING') {
+        return res.status(404).json({
+          success: false,
+          code: 'ACCOUNT_NOT_FOUND',
+          message: 'Account does not exist. Please register to create a new account.'
+        });
+      }
+      if (identity.state === 'INACTIVE') {
+        return res.status(403).json({
+          success: false,
+          code: 'ACCOUNT_DEACTIVATED',
+          message: 'Your account has been deactivated. Please contact the system administrator for assistance.'
+        });
+      }
+
+      // 1. Try users table (STUDENT or ADMIN)
+      let user = await User.findByEmail(identifier);
+      if (!user) user = await User.findByUsername(identifier);
+
+      if (user) {
+        const lock = await LoginLockout.checkLocked('users', user.id);
+        if (lock.locked) {
+          return res.status(423).json({
+            success: false,
+            message: `Account is temporarily locked due to repeated failed login attempts. Try again after ${new Date(lock.until).toLocaleTimeString()}.`
+          });
+        }
+
+        if (!verifyPassword(password, user.password)) {
+          await LoginLockout.registerFailure('users', user.id);
+          return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
+
+        await LoginLockout.clearLock('users', user.id);
+
+        const role = (user.role || 'STUDENT').toUpperCase();
+        const sid = newSessionId();
+        await AuthController._storeSession('users', user.id, sid, platform);
+
+        const token = jwt.sign(
           {
             id: user.id,
             email: user.email,
@@ -24,17 +79,16 @@ class AuthController {
             type: role,
             institution: user.institution || user.college || null,
             sid,
-            platform // NEW — 'MOBILE' | 'WEB'
+            platform
           },
           JWT_SECRET,
           { expiresIn: '7d' }
         );
-        // NEW: cookie is set ONLY when the caller is the web client.
-        // Android requests never contain platform=WEB, so no cookie
-        // is ever emitted for them, and their response body is unchanged.
+
         if (platform === 'WEB') {
           AuthController._setAuthCookie(res, token);
         }
+
         return res.json({
           success: true,
           token,
@@ -53,6 +107,7 @@ class AuthController {
           }
         });
       }
+
       // 2. Try librarians table
       const librarian = await Librarian.findByUsernameOrEmailOrEmployee(identifier);
       if (librarian) {
@@ -63,6 +118,7 @@ class AuthController {
             message: `Account is temporarily locked due to repeated failed login attempts. Try again after ${new Date(lock.until).toLocaleTimeString()}.`
           });
         }
+
         const stored = librarian.password;
         let ok = false;
         if (stored && stored.startsWith('PBKDF2:')) {
@@ -70,13 +126,17 @@ class AuthController {
         } else {
           ok = verifyPassword(password, stored);
         }
+
         if (!ok) {
           await LoginLockout.registerFailure('librarians', librarian.id);
           return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
+
         await LoginLockout.clearLock('librarians', librarian.id);
+
         const sid = newSessionId();
         await AuthController._storeSession('librarians', librarian.id, sid, platform);
+
         const token = jwt.sign(
           {
             id: librarian.id,
@@ -86,14 +146,16 @@ class AuthController {
             role: 'LIBRARIAN',
             institution: librarian.institution || null,
             sid,
-            platform // NEW
+            platform
           },
           JWT_SECRET,
           { expiresIn: '24h' }
         );
+
         if (platform === 'WEB') {
           AuthController._setAuthCookie(res, token);
         }
+
         return res.json({
           success: true,
           token,
@@ -111,6 +173,7 @@ class AuthController {
           }
         });
       }
+
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     } catch (e) {
       console.error('Unified login error:', e);
@@ -118,10 +181,6 @@ class AuthController {
     }
   }
 
-  // ============================================================
-  // NEW private helpers — additive only. They do not modify any
-  // existing method or behavior.
-  // ============================================================
   static async _storeSession(table, accountId, sid, platform) {
     const column = platform === 'WEB' ? 'current_session_web' : 'current_session_id';
     await pool.execute(
@@ -131,30 +190,15 @@ class AuthController {
   }
 
   static _setAuthCookie(res, token) {
-    // httpOnly + Secure + SameSite=Strict is the recommended trio for
-    // JWT-in-cookie on the web. maxAge mirrors the JWT's own expiry
-    // (7d for users, 24h for librarians — the shorter value wins if
-    // both are used, which is fine).
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/'
     });
   }
 
-  // ==============================================================
-  // NEW HELPER — determine whether an identifier belongs to any
-  // account (user or librarian), ignoring the is_active filter, so
-  // the controller can return a distinct message for "missing"
-  // vs "deactivated".
-  //
-  // Returns:
-  //   { state: 'ACTIVE'   }  -> continue with the normal login flow
-  //   { state: 'INACTIVE' }  -> respond 403 ACCOUNT_DEACTIVATED
-  //   { state: 'MISSING'  }  -> respond 404 ACCOUNT_NOT_FOUND
-  // ==============================================================
   static async _resolveIdentity(identifier) {
     const [userRows] = await pool.execute(
       `SELECT id, is_active FROM users
@@ -210,16 +254,6 @@ class AuthController {
         });
       }
 
-      // ============================================================
-      // NEW STEP 1 — Full duplicate check across username / email /
-      // phone for users (regardless of is_active) AND against
-      // librarians' email/username. If any field collides, return a
-      // single friendly message instructing the user to contact the
-      // system administrator.
-      //
-      // This runs BEFORE the existing User.findByEmail check so the
-      // latter never masks a deactivated-account collision.
-      // ============================================================
       const duplicate = await AuthController._findDuplicateRegistrationField({
         username,
         email,
@@ -280,15 +314,7 @@ class AuthController {
     }
   }
 
-  // ==============================================================
-  // NEW HELPER — return the name of the first colliding field
-  // ('username' | 'email' | 'phone' | 'librarian') or null when all
-  // are free. Ignores is_active, so a deactivated account still
-  // blocks re-registration with the same details — the user is
-  // directed to the admin instead of silently duplicating rows.
-  // ==============================================================
   static async _findDuplicateRegistrationField({ username, email, phone }) {
-    // 1) users table
     const [userRows] = await pool.execute(
       `SELECT username, email, phone FROM users
         WHERE username = ? OR email = ? OR (phone IS NOT NULL AND phone = ?)
@@ -302,7 +328,6 @@ class AuthController {
       if (phone && row.phone === phone) return 'phone';
     }
 
-    // 2) librarians table — protect against email/username reuse
     const [libRows] = await pool.execute(
       `SELECT username, email FROM librarians
         WHERE username = ? OR email = ? LIMIT 1`,
@@ -526,11 +551,6 @@ class AuthController {
     }
   }
 
-  // ---------------------------------------------------------------
-  // NEW: Update the currently logged-in STUDENT or ADMIN profile.
-  // PUT /api/auth/profile
-  // Body: { username?, email?, fullName?, phone?, level? }
-  // ---------------------------------------------------------------
   static async updateProfile(req, res) {
     try {
       const userId = req.user && req.user.id;
@@ -550,7 +570,6 @@ class AuthController {
 
       const { username, email, fullName, phone, level } = req.body || {};
 
-      // Validate level against the same whitelist used by register().
       let normalizedLevel = undefined;
       if (level !== undefined && level !== null && String(level).trim() !== '') {
         const allowedLevels = [
