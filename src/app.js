@@ -4,7 +4,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
 const admin = require('firebase-admin');
-const cookieParser = require('cookie-parser');   // NEW
+const cookieParser = require('cookie-parser');
 
 // 1. Load environment variables from ca.env BEFORE anything else
 require('dotenv').config({ path: path.resolve(__dirname, '../ca.env') });
@@ -21,7 +21,7 @@ const userRoutes = require('./routes/user');
 
 const app = express();
 
-// NEW: trust Render's reverse proxy so req.ip reflects the client IP.
+// Trust Render's reverse proxy so req.ip reflects the client IP.
 // Without this, express-rate-limit sees the proxy's IP and one user
 // can lock out every other user for the same window.
 app.set('trust proxy', 1);
@@ -51,28 +51,32 @@ try {
 // --- Middleware ---
 app.use(helmet());
 
-// CHANGED: credentials:true so the browser will attach the httpOnly
-// cookie on cross-origin requests. Web-app origin added.
-// Android is unaffected — OkHttp ignores CORS entirely.
+// CORS origins: base list is hardcoded (production API, dev hosts);
+// additional origins come from the WEB_APP_ORIGINS env var
+// (comma-separated). Add the Netlify URL on Render's env config —
+// no code change or redeploy needed.
+const allowedOrigins = [
+  'https://college-library-api-xyb6.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:4173',
+  ...(process.env.WEB_APP_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+];
+
 app.use(cors({
-  origin: [
-    'https://college-library-api-xyb6.onrender.com',
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'http://localhost:4173',             // NEW: Vite preview
-    'https://your-web-app.vercel.app'    // NEW: replace when deployed
-  ],
+  origin: allowedOrigins,
   credentials: true
 }));
 
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());                  // NEW: after body parsers
+app.use(cookieParser());
 
 // --- Static file serving for institution branding / book covers ---
-// Anything placed in ./public is reachable at /static/<path>
-// Example: public/images/logo.jpg  →  https://your-api.onrender.com/static/images/logo.jpg
 app.use('/static', express.static(path.join(__dirname, '../public')));
 
 // --- API Routes ---
