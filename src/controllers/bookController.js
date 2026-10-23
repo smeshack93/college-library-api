@@ -7,6 +7,10 @@ const admin = require('firebase-admin');
 // to every institution. No case normalization: matches the literal string.
 const GLOBAL_INSTITUTION = 'General';
 
+// Where web-push notifications should click through to.
+// Matches the librarianController convention.
+const WEB_APP_URL = process.env.WEB_APP_URL || 'https://your-web-app.example.com';
+
 class BookController {
 
     /**
@@ -198,6 +202,16 @@ class BookController {
                             notification: {
                                 channelId: 'library_requests',
                                 sound: 'default'
+                            }
+                        },
+                        webpush: {
+                            notification: {
+                                icon: '/static/images/kctm.png',
+                                badge: '/static/images/kctm.png',
+                                click_action: WEB_APP_URL
+                            },
+                            fcmOptions: {
+                                link: WEB_APP_URL
                             }
                         }
                     };
@@ -550,189 +564,10 @@ class BookController {
         }
     }
 
-    /**
-     * Approve a book request (BORROW or RETURN)
-     * POST /api/librarian/requests/:id/approve
-     */
-    static async approveRequest(req, res) {
-        const connection = await pool.getConnection();
-        try {
-            const { id } = req.params;
-            const librarianId = req.user.id;
-            const { notes = '' } = req.body;
-
-            await connection.beginTransaction();
-
-            const [requests] = await connection.execute(
-                `SELECT br.*, b.title, b.available_quantity, b.quantity
-                   FROM book_requests br
-                   JOIN books b ON br.book_id = b.id
-                  WHERE br.id = ? AND br.status = 'PENDING'`,
-                [id]
-            );
-
-            if (requests.length === 0) {
-                await connection.rollback();
-                return res.status(404).json({
-                    success: false,
-                    message: 'Request not found or already processed'
-                });
-            }
-
-            const request = requests[0];
-            let actionMessage = '';
-
-            if (request.request_type === 'BORROW') {
-                await connection.execute(
-                    `UPDATE book_requests
-                        SET status = 'APPROVED',
-                            approved_by = ?,
-                            approval_date = UTC_TIMESTAMP(),
-                            borrow_date = UTC_TIMESTAMP(),
-                            due_date = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 14 DAY),
-                            notes = ?
-                      WHERE id = ?`,
-                    [librarianId, notes, id]
-                );
-
-                const [updateResult] = await connection.execute(
-                    `UPDATE books
-                        SET available_quantity = available_quantity - 1
-                      WHERE id = ? AND available_quantity > 0`,
-                    [request.book_id]
-                );
-
-                if (updateResult.affectedRows === 0) {
-                    await connection.rollback();
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Book is no longer available in stock'
-                    });
-                }
-                actionMessage = 'Borrow request approved';
-
-            } else if (request.request_type === 'RETURN') {
-                // Enforce librarian remark on the original BORROW row before approving return.
-                if (request.related_request_id) {
-                    const [[borrowRow]] = await connection.execute(
-                        `SELECT remark FROM book_requests WHERE id = ?`,
-                        [request.related_request_id]
-                    );
-                    const hasRemark = borrowRow && borrowRow.remark !== null
-                        && String(borrowRow.remark).trim() !== '';
-                    if (!hasRemark) {
-                        await connection.rollback();
-                        return res.status(400).json({
-                            success: false,
-                            message: 'Cannot approve return: the borrow record has no librarian remark yet.'
-                        });
-                    }
-                }
-
-                await connection.execute(
-                    `UPDATE book_requests
-                        SET status = 'RETURNED',
-                            approved_by = ?,
-                            approval_date = UTC_TIMESTAMP(),
-                            return_date = UTC_TIMESTAMP(),
-                            notes = ?
-                      WHERE id = ?`,
-                    [librarianId, notes, id]
-                );
-
-                if (request.related_request_id) {
-                    await connection.execute(
-                        `UPDATE book_requests SET status = 'RETURNED' WHERE id = ?`,
-                        [request.related_request_id]
-                    );
-                }
-
-                await connection.execute(
-                    `UPDATE books SET available_quantity = available_quantity + 1 WHERE id = ?`,
-                    [request.book_id]
-                );
-                actionMessage = 'Return request approved';
-
-            } else {
-                await connection.rollback();
-                return res.status(400).json({
-                    success: false,
-                    message: `Invalid request type: ${request.request_type}`
-                });
-            }
-
-            await connection.commit();
-
-            const [updatedBooks] = await pool.execute(
-                'SELECT available_quantity FROM books WHERE id = ?',
-                [request.book_id]
-            );
-            const newQuantity = updatedBooks.length > 0 ? updatedBooks[0].available_quantity : 'unknown';
-
-            res.json({
-                success: true,
-                message: `${actionMessage} successfully`,
-                data: {
-                    requestId: id,
-                    requestType: request.request_type,
-                    newAvailableQuantity: newQuantity
-                }
-            });
-        } catch (error) {
-            await connection.rollback();
-            console.error('❌ Approve request error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to approve request: ' + error.message
-            });
-        } finally {
-            connection.release();
-        }
-    }
-
-    /**
-     * Reject a book request
-     * POST /api/librarian/requests/:id/reject
-     */
-    static async rejectRequest(req, res) {
-        try {
-            const { id } = req.params;
-            const librarianId = req.user.id;
-            const { notes } = req.body;
-
-            if (!notes || notes.trim() === '') {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Rejection reason (notes) is required'
-                });
-            }
-
-            const [result] = await pool.execute(
-                `UPDATE book_requests
-                    SET status = 'REJECTED',
-                        approved_by = ?,
-                        approval_date = UTC_TIMESTAMP(),
-                        notes = ?
-                  WHERE id = ? AND status = 'PENDING'`,
-                [librarianId, notes, id]
-            );
-
-            if (result.affectedRows === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Request not found or already processed'
-                });
-            }
-
-            res.json({ success: true, message: 'Request rejected successfully' });
-        } catch (error) {
-            console.error('❌ Reject request error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Failed to reject request: ' + error.message
-            });
-        }
-    }
+    // NOTE: approveRequest and rejectRequest were removed from this file.
+    // They were never mounted by routes/books.js — the live handlers live
+    // in controllers/librarianController.js and are mounted at
+    // /api/librarian/requests/:id/approve and /:id/reject.
 }
 
 module.exports = BookController;
