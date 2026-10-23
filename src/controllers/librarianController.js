@@ -7,6 +7,11 @@ const LoginLockout = require('../utils/loginLockout');
 
 const GLOBAL_INSTITUTION = 'General';
 
+// Where web-push notifications should click through to.
+// Driven by the WEB_APP_URL env var (set on Render). Falls back
+// to a placeholder so a missing env var never crashes the app.
+const WEB_APP_URL = process.env.WEB_APP_URL || 'https://your-web-app.example.com';
+
 let messaging = null;
 try {
     messaging = admin.messaging();
@@ -60,10 +65,10 @@ async function sendRequestStatusNotification(userId, deviceTokens, requestId, bo
             notification: {
                 icon: '/static/images/kctm.png',
                 badge: '/static/images/kctm.png',
-                click_action: 'https://your-web-app.vercel.app'
+                click_action: WEB_APP_URL
             },
             fcmOptions: {
-                link: 'https://your-web-app.vercel.app'
+                link: WEB_APP_URL
             }
         }
     }));
@@ -331,10 +336,15 @@ class LibrarianController {
             );
 
             if (platform === 'WEB') {
+                // Cross-site cookie: the web app lives on Netlify, the API
+                // on Render. sameSite:'none' + secure:true is required for
+                // the browser to send the cookie on cross-origin requests.
+                // Both production domains are HTTPS, so `secure:true` is
+                // always satisfied.
                 res.cookie('token', token, {
                     httpOnly: true,
-                    secure: process.env.NODE_ENV === 'production',
-                    sameSite: 'strict',
+                    secure: true,
+                    sameSite: 'none',
                     maxAge: 24 * 60 * 60 * 1000,
                     path: '/'
                 });
