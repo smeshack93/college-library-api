@@ -12,10 +12,18 @@ try {
     messaging = admin.messaging();
 } catch (e) { }
 
-async function sendRequestStatusNotification(userId, deviceToken, requestId, bookTitle, type) {
+async function sendRequestStatusNotification(userId, deviceTokens, requestId, bookTitle, type) {
     if (!messaging) {
         try { messaging = admin.messaging(); } catch (e) { return false; }
     }
+
+    const tokens = Array.isArray(deviceTokens)
+        ? deviceTokens.filter(t => typeof t === 'string' && t.trim() !== '')
+        : (typeof deviceTokens === 'string' && deviceTokens.trim() !== ''
+            ? [deviceTokens]
+            : []);
+
+    if (tokens.length === 0) return false;
 
     let title, body;
     switch (type) {
@@ -40,27 +48,73 @@ async function sendRequestStatusNotification(userId, deviceToken, requestId, boo
             body  = `There is an update on your request for "${bookTitle}".`;
     }
 
-    const message = {
-        token: deviceToken,
+    const messages = tokens.map(token => ({
+        token,
         notification: { title, body },
         data: { type, requestId: String(requestId), title, body },
         android: {
             priority: 'high',
             notification: { channelId: 'library_requests', sound: 'default' }
+        },
+        webpush: {
+            notification: {
+                icon: '/static/images/kctm.png',
+                badge: '/static/images/kctm.png',
+                click_action: 'https://your-web-app.vercel.app'
+            },
+            fcmOptions: {
+                link: 'https://your-web-app.vercel.app'
+            }
         }
-    };
+    }));
 
     try {
-        await messaging.send(message);
+        if (typeof messaging.sendEachForMulticast === 'function') {
+            const result = await messaging.sendEachForMulticast({ tokens, ...{
+                notification: { title, body },
+                data: { type, requestId: String(requestId), title, body },
+                android: { priority: 'high', notification: { channelId: 'library_requests', sound: 'default' } }
+            }});
+            await _pruneInvalidTokens(userId, tokens, result);
+        } else {
+            for (const msg of messages) {
+                try {
+                    await messaging.send(msg);
+                } catch (err) {
+                    await _pruneSingleToken(userId, msg.token, err);
+                }
+            }
+        }
         return true;
     } catch (error) {
-        if (error.code === 'messaging/registration-token-not-registered' ||
-            error.code === 'messaging/invalid-registration-token') {
-            try {
-                await pool.execute('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
-            } catch (dbErr) { }
-        }
+        console.error('FCM multicast error:', error.message);
         return false;
+    }
+}
+
+async function _pruneInvalidTokens(userId, tokens, result) {
+    if (!result || !Array.isArray(result.responses)) return;
+    for (let i = 0; i < result.responses.length; i++) {
+        const r = result.responses[i];
+        if (!r.success) {
+            await _pruneSingleToken(userId, tokens[i], r.error);
+        }
+    }
+}
+
+async function _pruneSingleToken(userId, token, error) {
+    if (!error) return;
+    if (error.code === 'messaging/registration-token-not-registered' ||
+        error.code === 'messaging/invalid-registration-token') {
+        try {
+            await pool.execute(
+                `UPDATE users
+                    SET fcm_token     = CASE WHEN fcm_token     = ? THEN NULL ELSE fcm_token     END,
+                        fcm_token_web = CASE WHEN fcm_token_web = ? THEN NULL ELSE fcm_token_web END
+                  WHERE id = ?`,
+                [token, token, userId]
+            );
+        } catch (dbErr) { /* swallow */ }
     }
 }
 
@@ -127,16 +181,6 @@ class LibrarianController {
         }
     }
 
-    // ---------------------------------------------------------------
-    // NEW: Update the currently logged-in LIBRARIAN profile.
-    // PUT /api/librarian/profile
-    // Body: { username?, email?, phone? }
-    //
-    // Full Name, Employee ID, and NTA Level are intentionally NOT
-    // editable here — they are identity fields managed by the admin
-    // and mapped to the Android UI's `applyRoleVisibility()` which
-    // hides those rows for librarians on the Edit Profile screen.
-    // ---------------------------------------------------------------
     static async updateProfile(req, res) {
         try {
             const librarianId = req.user && req.user.id;
@@ -263,7 +307,6 @@ class LibrarianController {
             await LoginLockout.clearLock('librarians', librarian.id);
 
             const sid = crypto.randomBytes(32).toString('hex');
-            // NEW: write the sid to the platform-specific column.
             const sessionColumn = platform === 'WEB' ? 'current_session_web' : 'current_session_id';
             await pool.execute(
                 `UPDATE librarians SET ${sessionColumn} = ? WHERE id = ?`,
@@ -281,13 +324,12 @@ class LibrarianController {
                     type: 'LIBRARIAN',
                     role: 'librarian',
                     sid,
-                    platform // NEW
+                    platform
                 },
                 JWT_SECRET,
                 { expiresIn: '24h' }
             );
 
-            // NEW: set cookie for web callers only.
             if (platform === 'WEB') {
                 res.cookie('token', token, {
                     httpOnly: true,
@@ -509,21 +551,25 @@ class LibrarianController {
             (async () => {
                 try {
                     const [userRows] = await pool.execute(
-                        'SELECT fcm_token FROM users WHERE id = ?',
+                        'SELECT fcm_token, fcm_token_web FROM users WHERE id = ?',
                         [request.user_id]
                     );
-                    if (userRows && userRows.length > 0 && userRows[0].fcm_token) {
-                        const type = request.request_type === 'RETURN'
-                            ? 'RETURN_APPROVED'
-                            : 'REQUEST_APPROVED';
-
-                        await sendRequestStatusNotification(
-                            request.user_id,
-                            userRows[0].fcm_token,
-                            requestId,
-                            request.book_title || 'Requested Book',
-                            type
-                        );
+                    if (userRows && userRows.length > 0) {
+                        const row = userRows[0];
+                        const tokens = [row.fcm_token, row.fcm_token_web]
+                            .filter(t => t && String(t).trim() !== '');
+                        if (tokens.length > 0) {
+                            const type = request.request_type === 'RETURN'
+                                ? 'RETURN_APPROVED'
+                                : 'REQUEST_APPROVED';
+                            await sendRequestStatusNotification(
+                                request.user_id,
+                                tokens,
+                                requestId,
+                                request.book_title || 'Requested Book',
+                                type
+                            );
+                        }
                     }
                 } catch (notifErr) { }
             })();
@@ -592,21 +638,25 @@ class LibrarianController {
             (async () => {
                 try {
                     const [userRows] = await pool.execute(
-                        'SELECT fcm_token FROM users WHERE id = ?',
+                        'SELECT fcm_token, fcm_token_web FROM users WHERE id = ?',
                         [request.user_id]
                     );
-                    if (userRows && userRows.length > 0 && userRows[0].fcm_token) {
-                        const type = request.request_type === 'RETURN'
-                            ? 'RETURN_REJECTED'
-                            : 'REQUEST_REJECTED';
-
-                        await sendRequestStatusNotification(
-                            request.user_id,
-                            userRows[0].fcm_token,
-                            requestId,
-                            request.book_title || 'Requested Book',
-                            type
-                        );
+                    if (userRows && userRows.length > 0) {
+                        const row = userRows[0];
+                        const tokens = [row.fcm_token, row.fcm_token_web]
+                            .filter(t => t && String(t).trim() !== '');
+                        if (tokens.length > 0) {
+                            const type = request.request_type === 'RETURN'
+                                ? 'RETURN_REJECTED'
+                                : 'REQUEST_REJECTED';
+                            await sendRequestStatusNotification(
+                                request.user_id,
+                                tokens,
+                                requestId,
+                                request.book_title || 'Requested Book',
+                                type
+                            );
+                        }
                     }
                 } catch (notifErr) { }
             })();
@@ -929,25 +979,6 @@ class LibrarianController {
         }
     }
 
-    // ============================================================
-    // UPDATED — POST /api/librarian/reset-password
-    //
-    // BUG FIX: the original method required `username` in the body,
-    // but the Android client (LibrarianForgotPasswordActivity) only
-    // sends `{ employeeId, newPassword }`. Binding `undefined` as a
-    // MySQL parameter throws synchronously, which is why the previous
-    // version returned 500 in <1ms without touching the database.
-    //
-    // FIX: identify the librarian by `employeeId` alone, matching
-    // what `verifyIdentity` already validated moments earlier. If
-    // `username` IS supplied (a caller that wants defense-in-depth),
-    // it's still checked. If it's missing (Android today), the query
-    // falls back to employee_id-only, which is safe because the
-    // preceding verifyIdentity call already authenticated the row.
-    //
-    // Also nulls BOTH current_session_id and current_session_web on
-    // success (Step 2 behavior).
-    // ============================================================
     static async resetPassword(req, res) {
         try {
             const body = req.body || {};
@@ -955,16 +986,13 @@ class LibrarianController {
             const employeeId = body.employeeId || body.employee_id || null;
             const username = body.username || null;
 
-            // Validate password
-            if (!newPassword || String(newPassword).length < 8) {
+            if (!newPassword || newPassword.length < 8) {
                 return res.status(400).json({
                     success: false,
                     message: 'New password must be at least 8 characters long.'
                 });
             }
 
-            // Must have at least employeeId — that's the identity the
-            // Android client verified one step earlier.
             if (!employeeId || String(employeeId).trim() === '') {
                 return res.status(400).json({
                     success: false,
@@ -975,9 +1003,6 @@ class LibrarianController {
             const trimmedEmpId = String(employeeId).trim();
             const trimmedUsername = username ? String(username).trim() : '';
 
-            // Build the query conditionally: if username was provided,
-            // enforce it too (defense-in-depth); otherwise rely on
-            // employee_id alone (Android path).
             let rows;
             if (trimmedUsername !== '') {
                 [rows] = await pool.execute(
@@ -1012,8 +1037,6 @@ class LibrarianController {
                 [passwordHash, librarianId]
             );
 
-            // Step 2 behavior: null BOTH sessions so password reset
-            // invalidates Android AND web sessions at once.
             await pool.execute(
                 `UPDATE librarians
                     SET current_session_id = NULL,
@@ -1292,4 +1315,5 @@ class LibrarianController {
         }
     }
 }
+
 module.exports = LibrarianController;
