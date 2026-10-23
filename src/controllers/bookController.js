@@ -166,15 +166,19 @@ class BookController {
 
             try {
                 const [librarians] = await pool.execute(
-                    "SELECT id, fcm_token FROM librarians " +
+                    "SELECT id, fcm_token, fcm_token_web FROM librarians " +
                     "WHERE is_active = 1 " +
-                    "AND fcm_token IS NOT NULL " +
-                    "AND fcm_token <> '' " +
+                    "AND ( (fcm_token IS NOT NULL AND fcm_token <> '') " +
+                    "   OR (fcm_token_web IS NOT NULL AND fcm_token_web <> '') ) " +
                     "AND (institution = ? OR institution = ?)",
                     [bookInst, GLOBAL_INSTITUTION]
                 );
 
-                const tokens = librarians.map(l => l.fcm_token).filter(Boolean);
+                const tokens = [];
+                for (const l of librarians) {
+                    if (l.fcm_token)     tokens.push(l.fcm_token);
+                    if (l.fcm_token_web) tokens.push(l.fcm_token_web);
+                }
 
                 if (tokens.length > 0) {
                     const title = 'New Book Request';
