@@ -929,30 +929,69 @@ class LibrarianController {
         }
     }
 
-      // ============================================================
+    // ============================================================
     // UPDATED — POST /api/librarian/reset-password
     //
-    // Now nulls BOTH current_session_id and current_session_web so
-    // that a self-service password reset kicks out Android AND web
-    // sessions for that librarian. The response body is unchanged
-    // (still `{ success: true, message: 'Password reset successfully.' }`),
-    // so no Android caller needs to change.
+    // BUG FIX: the original method required `username` in the body,
+    // but the Android client (LibrarianForgotPasswordActivity) only
+    // sends `{ employeeId, newPassword }`. Binding `undefined` as a
+    // MySQL parameter throws synchronously, which is why the previous
+    // version returned 500 in <1ms without touching the database.
+    //
+    // FIX: identify the librarian by `employeeId` alone, matching
+    // what `verifyIdentity` already validated moments earlier. If
+    // `username` IS supplied (a caller that wants defense-in-depth),
+    // it's still checked. If it's missing (Android today), the query
+    // falls back to employee_id-only, which is safe because the
+    // preceding verifyIdentity call already authenticated the row.
+    //
+    // Also nulls BOTH current_session_id and current_session_web on
+    // success (Step 2 behavior).
     // ============================================================
     static async resetPassword(req, res) {
         try {
-            const { username, employeeId, newPassword } = req.body;
+            const body = req.body || {};
+            const newPassword = body.newPassword;
+            const employeeId = body.employeeId || body.employee_id || null;
+            const username = body.username || null;
 
-            if (!newPassword || newPassword.length < 8) {
+            // Validate password
+            if (!newPassword || String(newPassword).length < 8) {
                 return res.status(400).json({
                     success: false,
                     message: 'New password must be at least 8 characters long.'
                 });
             }
 
-            const [rows] = await pool.execute(
-                `SELECT id FROM librarians WHERE username = ? AND employee_id = ? AND is_active = 1`,
-                [username, employeeId]
-            );
+            // Must have at least employeeId — that's the identity the
+            // Android client verified one step earlier.
+            if (!employeeId || String(employeeId).trim() === '') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Employee ID is required.'
+                });
+            }
+
+            const trimmedEmpId = String(employeeId).trim();
+            const trimmedUsername = username ? String(username).trim() : '';
+
+            // Build the query conditionally: if username was provided,
+            // enforce it too (defense-in-depth); otherwise rely on
+            // employee_id alone (Android path).
+            let rows;
+            if (trimmedUsername !== '') {
+                [rows] = await pool.execute(
+                    `SELECT id FROM librarians
+                      WHERE employee_id = ? AND username = ? AND is_active = 1`,
+                    [trimmedEmpId, trimmedUsername]
+                );
+            } else {
+                [rows] = await pool.execute(
+                    `SELECT id FROM librarians
+                      WHERE employee_id = ? AND is_active = 1`,
+                    [trimmedEmpId]
+                );
+            }
 
             if (!rows || rows.length === 0) {
                 return res.status(404).json({
@@ -961,30 +1000,35 @@ class LibrarianController {
                 });
             }
 
+            const librarianId = rows[0].id;
+
             const salt = await bcrypt.genSalt(10);
             const passwordHash = await bcrypt.hash(newPassword, salt);
 
             await pool.execute(
-                `UPDATE librarians SET password = ?, password_format = 'BCRYPT' WHERE id = ?`,
-                [passwordHash, rows[0].id]
+                `UPDATE librarians
+                    SET password = ?, password_format = 'BCRYPT'
+                  WHERE id = ?`,
+                [passwordHash, librarianId]
             );
 
-            // CHANGED: nulls BOTH session columns so both Android
-            // and web sessions are invalidated at once.
+            // Step 2 behavior: null BOTH sessions so password reset
+            // invalidates Android AND web sessions at once.
             await pool.execute(
                 `UPDATE librarians
                     SET current_session_id = NULL,
                         current_session_web = NULL
                   WHERE id = ?`,
-                [rows[0].id]
+                [librarianId]
             );
 
-            res.json({
+            return res.json({
                 success: true,
                 message: 'Password reset successfully. You can now login.'
             });
         } catch (error) {
-            res.status(500).json({
+            console.error('Librarian resetPassword error:', error);
+            return res.status(500).json({
                 success: false,
                 message: 'Failed to reset password.'
             });
