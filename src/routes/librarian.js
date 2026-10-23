@@ -5,7 +5,7 @@ const LibrarianController = require('../controllers/librarianController');
 const { librarianAuth } = require('../middleware/auth');
 const { pool } = require('../config/database');
 
-// ---- Rate limiters (NEW) ----
+// ---- Rate limiters (UNCHANGED) ----
 const librarianLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -52,6 +52,26 @@ router.post('/login', librarianLoginLimiter, LibrarianController.login);
  * @access  Private (Librarian only)
  */
 router.post('/fcm-token', librarianAuth, LibrarianController.updateFcmToken);
+
+/**
+ * @route   POST /api/librarian/fcm-token-web
+ * @desc    Save/update librarian web FCM device token
+ * @access  Private (Librarian only)
+ */
+router.post('/fcm-token-web', librarianAuth, async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ success: false, message: 'Token required' });
+    await pool.execute(
+      'UPDATE librarians SET fcm_token_web = ? WHERE id = ?',
+      [String(token), req.user.id]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Librarian Web FCM token update error:', e);
+    res.status(500).json({ success: false, message: 'Failed to update web FCM token' });
+  }
+});
 
 /**
  * @route   GET /api/librarian/profile
