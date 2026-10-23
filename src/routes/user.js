@@ -4,6 +4,9 @@ const { authMiddleware } = require('../middleware/auth');
 const User = require('../models/User');
 const { pool } = require('../config/database');
 
+// ============================================================
+// EXISTING — Android FCM token (unchanged, writes to fcm_token)
+// ============================================================
 router.post('/fcm-token', authMiddleware, async (req, res) => {
   try {
     const { token } = req.body;
@@ -16,6 +19,29 @@ router.post('/fcm-token', authMiddleware, async (req, res) => {
   }
 });
 
+// ============================================================
+// NEW — Web FCM token (writes to fcm_token_web).
+// Android does not call this. Body shape is identical to the
+// Android endpoint so future clients can share the same DTO.
+// ============================================================
+router.post('/fcm-token-web', authMiddleware, async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ success: false, message: 'Token required' });
+    await pool.execute(
+      'UPDATE users SET fcm_token_web = ? WHERE id = ?',
+      [String(token), req.user.id]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    console.error('User Web FCM token update error:', e);
+    res.status(500).json({ success: false, message: 'Failed to update web FCM token' });
+  }
+});
+
+// ============================================================
+// EXISTING — Institution branding (unchanged)
+// ============================================================
 router.get('/institution-branding', authMiddleware, async (req, res) => {
   try {
     const institution = req.user.institution || null;
