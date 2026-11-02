@@ -182,19 +182,7 @@ class AuthController {
   }
 
   // ============================================================
-  // NEW — POST /api/auth/refresh
-  //
-  // Rotates the sid, issues a fresh JWT with the SAME platform and
-  // expiry policy as the original token, and (for WEB) refreshes
-  // the httpOnly cookie. Requires an already-valid token in the
-  // Authorization header OR the token cookie. authMiddleware has
-  // already validated it before this runs, so `req.user` is
-  // trustworthy.
-  //
-  // Android behavior: no Android caller hits this today. If it ever
-  // does, the response is a plain JSON token payload that mirrors
-  // the login response — the Android DTO would need a small field
-  // added. Not required for Step 2.
+  // POST /api/auth/refresh
   // ============================================================
   static async refresh(req, res) {
     try {
@@ -239,37 +227,74 @@ class AuthController {
   }
 
   // ============================================================
-  // NEW — GET /api/auth/me
-  //
-  // Returns the decoded payload for the currently authenticated
-  // caller. The web app uses this on page load (after a cookie
-  // restore) to hydrate the UI without a client-side token store.
-  //
-  // Android today does not call this, so no DTO changes are needed.
+  // GET /api/auth/me (Updated implementation)
   // ============================================================
   static async me(req, res) {
     try {
       const p = req.user || {};
+      const role = String(p.type || p.role || '').toUpperCase();
+
+      // If LIBRARIAN, query librarians table
+      if (role === 'LIBRARIAN') {
+        const [rows] = await pool.execute(
+          `SELECT id, username, full_name, email, phone, institution, employee_id
+             FROM librarians WHERE id = ? AND is_active = 1 LIMIT 1`,
+          [p.id]
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ success: false, message: 'Account not found' });
+        }
+        const lib = rows[0];
+        return res.json({
+          success: true,
+          user: {
+            id: lib.id,
+            username: lib.username,
+            email: lib.email,
+            fullName: lib.full_name,
+            employeeId: lib.employee_id,
+            phone: lib.phone || '',
+            institution: lib.institution || '',
+            role: 'LIBRARIAN',
+            type: 'LIBRARIAN',
+            platform: p.platform || 'MOBILE'
+          }
+        });
+      }
+
+      // Otherwise, query users table (STUDENT/ADMIN)
+      const [rows] = await pool.execute(
+        `SELECT id, username, email, full_name, level, phone, institution, role
+           FROM users WHERE id = ? AND is_active = 1 LIMIT 1`,
+        [p.id]
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Account not found' });
+      }
+      const user = rows[0];
       return res.json({
         success: true,
         user: {
-          id: p.id,
-          username: p.username || null,
-          email: p.email || null,
-          role: p.role || null,
-          type: p.type || p.role || null,
-          institution: p.institution || null,
-          employeeId: p.employeeId || null,
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          fullName: user.full_name,
+          level: user.level || '',
+          phone: user.phone || '',
+          institution: user.institution || '',
+          role: (user.role || 'STUDENT').toUpperCase(),
+          type: (user.role || 'STUDENT').toUpperCase(),
           platform: p.platform || 'MOBILE'
         }
       });
     } catch (e) {
+      console.error('me() error:', e);
       return res.status(500).json({ success: false, message: 'Failed to load session' });
     }
   }
 
   // ============================================================
-  // Helpers (unchanged signatures, one new method)
+  // Helpers
   // ============================================================
 
   static async _storeSession(table, accountId, sid, platform) {
@@ -280,9 +305,6 @@ class AuthController {
     );
   }
 
-  // NEW: nulls BOTH session columns. Used by changePassword and
-  // resetPassword so a password change kicks out Android AND web
-  // sessions. Android callers see the intended forced logout.
   static async _clearAllSessions(table, accountId) {
     await pool.execute(
       `UPDATE ${table}
@@ -306,10 +328,6 @@ class AuthController {
   static _clearAuthCookie(res) {
     res.clearCookie('token', { path: '/' });
   }
-
-  // ============================================================
-  // Existing helpers — byte-identical to Step 1
-  // ============================================================
 
   static async _resolveIdentity(identifier) {
     const [userRows] = await pool.execute(
@@ -538,7 +556,6 @@ class AuthController {
           });
         }
 
-        // CHANGED: now clears BOTH sessions
         await AuthController._clearAllSessions('librarians', lib.id);
 
         return res.json({
@@ -574,7 +591,6 @@ class AuthController {
       await User.updatePassword(user.id, hashedPassword);
       await User.clearResetToken(user.id);
 
-      // CHANGED: now clears BOTH sessions
       await AuthController._clearAllSessions('users', user.id);
 
       res.json({
@@ -647,11 +663,9 @@ class AuthController {
 
       if (isLibrarian) {
         await Librarian.updatePassword(account.id, hashedPassword);
-        // CHANGED: now clears BOTH sessions
         await AuthController._clearAllSessions('librarians', account.id);
       } else {
         await User.updatePassword(account.id, hashedPassword);
-        // CHANGED: now clears BOTH sessions
         await AuthController._clearAllSessions('users', account.id);
       }
 
@@ -749,22 +763,10 @@ class AuthController {
   }
 
   // ============================================================
-  // UPDATED — POST /api/auth/logout
-  //
-  // Now:
-  //   1. Clears the caller's platform-specific session column only.
-  //      (Android logs out of Android; web logs out of web — the
-  //      other session keeps working, matching the design where a
-  //      user can be on both at once.)
-  //   2. Always clears the `token` cookie. Harmless for Android
-  //      because Android never received one.
-  //
-  // Android response: identical body `{ success: true, message:
-  // 'Logged out.' }`. No behavioral change.
+  // POST /api/auth/logout
   // ============================================================
   static async logout(req, res) {
     try {
-      // Always clear the cookie (harmless for callers that never had one).
       AuthController._clearAuthCookie(res);
 
       const payload = req.user;
