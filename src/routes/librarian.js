@@ -88,6 +88,35 @@ router.get('/profile', librarianAuth, LibrarianController.getProfile);
 router.put('/profile', librarianAuth, LibrarianController.updateProfile);
 
 /**
+ * @route   POST /api/librarian/institution-request
+ * @desc    Submit an institution transfer request for the logged-in librarian
+ * @access  Private (Librarian only)
+ */
+router.post('/institution-request', librarianAuth, async (req, res) => {
+  try {
+    const librarianId = req.user.id;
+    const { requestedInstitution, reason } = req.body;
+
+    if (!requestedInstitution || !requestedInstitution.trim()) {
+      return res.status(400).json({ success: false, message: 'Requested institution is required' });
+    }
+
+    const currentInst = req.user.institution || 'Unassigned';
+
+    await pool.execute(
+      `INSERT INTO institution_requests (librarian_id, user_type, current_institution, requested_institution, reason)
+       VALUES (?, 'LIBRARIAN', ?, ?, ?)`,
+      [librarianId, currentInst, requestedInstitution.trim(), reason || '']
+    );
+
+    return res.json({ success: true, message: 'Institution transfer request submitted to Administrator.' });
+  } catch (e) {
+    console.error('Librarian institution request error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to submit institution request' });
+  }
+});
+
+/**
  * @route   GET /api/librarian/institution-branding
  * @desc    Get current librarian's institution branding info
  * @access  Private (Librarian only)
