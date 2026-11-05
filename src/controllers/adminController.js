@@ -82,7 +82,6 @@ class AdminController {
 
   static async setUserActive(req, res) {
     try {
-      // NEW: Prevent deactivation of ADMIN accounts
       const [[targetUser]] = await pool.execute('SELECT role FROM users WHERE id = ?', [req.params.id]);
       if (targetUser && targetUser.role === 'ADMIN') {
         return res.status(403).json({ success: false, message: 'Admin accounts cannot be deactivated.' });
@@ -98,7 +97,6 @@ class AdminController {
 
   static async deleteUser(req, res) {
     try {
-      // NEW: Prevent deletion of ADMIN accounts
       const [[targetUser]] = await pool.execute('SELECT role FROM users WHERE id = ?', [req.params.id]);
       if (targetUser && targetUser.role === 'ADMIN') {
         return res.status(403).json({ success: false, message: 'Admin accounts cannot be deleted.' });
@@ -166,7 +164,7 @@ class AdminController {
     }
   }
 
-  // ============== STATS ==============
+  // ============== STATS & INSTITUTION REQUESTS ==============
 
   static async getStats(req, res) {
     try {
@@ -175,15 +173,66 @@ class AdminController {
       const [[libs]] = await pool.execute(`SELECT COUNT(*) AS c FROM librarians`);
       const [[books]] = await pool.execute(`SELECT COUNT(*) AS c FROM books`);
       const [[reqs]] = await pool.execute(`SELECT COUNT(*) AS c FROM book_requests WHERE status='PENDING'`);
+      const [[instReqs]] = await pool.execute(`SELECT COUNT(*) AS c FROM institution_requests WHERE status='PENDING'`);
+      
       res.json({
         success: true,
         data: {
           students: users.c, admins: admins.c, librarians: libs.c,
-          books: books.c, pendingRequests: reqs.c
+          books: books.c, pendingRequests: reqs.c,
+          pendingInstitutionRequests: instReqs.c
         }
       });
     } catch (e) {
       res.status(500).json({ success: false, message: 'Failed to load stats' });
+    }
+  }
+
+  static async listInstitutionRequests(req, res) {
+    try {
+      const [rows] = await pool.execute(
+        `SELECT ir.*, 
+          COALESCE(u.full_name, l.full_name, u.username, l.username) AS account_name,
+          COALESCE(u.email, l.email) AS account_email
+         FROM institution_requests ir
+         LEFT JOIN users u ON ir.user_id = u.id
+         LEFT JOIN librarians l ON ir.librarian_id = l.id
+         WHERE ir.status = 'PENDING'
+         ORDER BY ir.created_at DESC`
+      );
+      res.json({ success: true, data: rows });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ success: false, message: 'Failed to load institution requests' });
+    }
+  }
+
+  static async processInstitutionRequest(req, res) {
+    try {
+      const { requestId } = req.params;
+      const { action, adminNotes } = req.body; // action: 'APPROVE' | 'REJECT'
+
+      const [rows] = await pool.execute(`SELECT * FROM institution_requests WHERE id = ? LIMIT 1`, [requestId]);
+      if (rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Request not found' });
+      }
+
+      const r = rows[0];
+
+      if (action === 'APPROVE') {
+        const table = r.user_type === 'LIBRARIAN' ? 'librarians' : 'users';
+        const targetId = r.user_type === 'LIBRARIAN' ? r.librarian_id : r.user_id;
+
+        await pool.execute(`UPDATE ${table} SET institution = ? WHERE id = ?`, [r.requested_institution, targetId]);
+        await pool.execute(`UPDATE institution_requests SET status = 'APPROVED', admin_notes = ? WHERE id = ?`, [adminNotes || '', requestId]);
+      } else {
+        await pool.execute(`UPDATE institution_requests SET status = 'REJECTED', admin_notes = ? WHERE id = ?`, [adminNotes || '', requestId]);
+      }
+
+      res.json({ success: true, message: `Request ${action.toLowerCase()}d successfully.` });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ success: false, message: 'Failed to process request' });
     }
   }
 }
