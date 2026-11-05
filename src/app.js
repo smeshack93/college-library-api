@@ -22,8 +22,6 @@ const userRoutes = require('./routes/user');
 const app = express();
 
 // Trust Render's reverse proxy so req.ip reflects the client IP.
-// Without this, express-rate-limit sees the proxy's IP and one user
-// can lock out every other user for the same window.
 app.set('trust proxy', 1);
 
 // --- Firebase Initialization ---
@@ -49,12 +47,13 @@ try {
 }
 
 // --- Middleware ---
-app.use(helmet());
+// Configured Helmet to allow cross-origin resource loading (images, logos, avatars)
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
 
 // CORS origins: base list is hardcoded (production API, dev hosts);
 // additional origins come from the WEB_APP_ORIGINS env var
-// (comma-separated). Add the Netlify URL on Render's env config —
-// no code change or redeploy needed.
 const allowedOrigins = [
   'https://college-library-api-xyb6.onrender.com',
   'http://localhost:3000',
@@ -77,7 +76,13 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // --- Static file serving for institution branding / book covers ---
-app.use('/static', express.static(path.join(__dirname, '../public')));
+// Added setHeaders to allow cross-origin image requests explicitly
+app.use('/static', express.static(path.join(__dirname, '../public'), {
+  setHeaders: (res) => {
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  }
+}));
 
 // --- API Routes ---
 
