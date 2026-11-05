@@ -5,6 +5,7 @@ const { body, validationResult } = require('express-validator');
 const AuthController = require('../controllers/authController');
 const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth');
 const PasswordPolicy = require('../utils/passwordPolicy');
+const { pool } = require('../config/database');
 
 const validateRequest = (req, res, next) => {
   const errors = validationResult(req);
@@ -136,6 +137,35 @@ router.post('/change-password', changePasswordValidation, AuthController.changeP
 router.put('/change-password', changePasswordValidation, AuthController.changePassword);
 
 router.put('/profile', authMiddleware, AuthController.updateProfile);
+
+/**
+ * @route   POST /api/auth/institution-request (or /api/user/institution-request if aliased)
+ * @desc    Submit student/user institution transfer request
+ * @access  Private (User only)
+ */
+router.post('/institution-request', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { requestedInstitution, reason } = req.body;
+
+    if (!requestedInstitution || !requestedInstitution.trim()) {
+      return res.status(400).json({ success: false, message: 'Requested institution is required' });
+    }
+
+    const currentInst = req.user.institution || 'Unassigned';
+
+    await pool.execute(
+      `INSERT INTO institution_requests (user_id, user_type, current_institution, requested_institution, reason)
+       VALUES (?, 'STUDENT', ?, ?, ?)`,
+      [userId, currentInst, requestedInstitution.trim(), reason || '']
+    );
+
+    return res.json({ success: true, message: 'Institution transfer request submitted to Administrator.' });
+  } catch (e) {
+    console.error('Student institution request error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to submit institution request' });
+  }
+});
 
 // ============================================================
 // NEW: cookie-aware logout. Uses optionalAuthMiddleware so that
