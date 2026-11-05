@@ -80,7 +80,9 @@ router.post('/books', AdminController.createBook);
 router.put('/books/:id', AdminController.updateBook);
 router.delete('/books/:id', AdminController.deleteBook);
 
-// Stats
+// Stats & Institution Requests
 router.get('/stats', AdminController.getStats);
+router.get('/institution-requests', AdminController.listInstitutionRequests);
+router.post('/institution-requests/:requestId/process', AdminController.processInstitutionRequest);
 
 module.exports = router;
