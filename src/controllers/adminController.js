@@ -174,7 +174,7 @@ class AdminController {
       const [[books]] = await pool.execute(`SELECT COUNT(*) AS c FROM books`);
       const [[reqs]] = await pool.execute(`SELECT COUNT(*) AS c FROM book_requests WHERE status='PENDING'`);
       const [[instReqs]] = await pool.execute(`SELECT COUNT(*) AS c FROM institution_requests WHERE status='PENDING'`);
-      
+
       res.json({
         success: true,
         data: {
@@ -188,21 +188,32 @@ class AdminController {
     }
   }
 
+  // ============================================================
+  // FIXED: honors ?status=PENDING|APPROVED|REJECTED|ALL
+  // ============================================================
   static async listInstitutionRequests(req, res) {
     try {
-      const [rows] = await pool.execute(
-        `SELECT ir.*, 
+      const raw = (req.query.status || '').toString().trim().toUpperCase();
+      const status = raw === '' ? 'PENDING' : raw;
+
+      let sql = `SELECT ir.*, 
           COALESCE(u.full_name, l.full_name, u.username, l.username) AS account_name,
           COALESCE(u.email, l.email) AS account_email
          FROM institution_requests ir
          LEFT JOIN users u ON ir.user_id = u.id
-         LEFT JOIN librarians l ON ir.librarian_id = l.id
-         WHERE ir.status = 'PENDING'
-         ORDER BY ir.created_at DESC`
-      );
+         LEFT JOIN librarians l ON ir.librarian_id = l.id`;
+
+      const params = [];
+      if (status !== 'ALL') {
+        sql += ` WHERE UPPER(TRIM(ir.status)) = ?`;
+        params.push(status);
+      }
+      sql += ` ORDER BY ir.created_at DESC`;
+
+      const [rows] = await pool.execute(sql, params);
       res.json({ success: true, data: rows });
     } catch (e) {
-      console.error(e);
+      console.error('listInstitutionRequests failed:', e);
       res.status(500).json({ success: false, message: 'Failed to load institution requests' });
     }
   }
