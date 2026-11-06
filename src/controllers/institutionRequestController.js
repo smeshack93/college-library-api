@@ -31,18 +31,25 @@ class InstitutionRequestController {
   }
 
   // 2. Admin List Pending Requests
+// 2. Admin List Requests (Supports filtering or fetching all for history)
   static async listPending(req, res) {
     try {
-      const [rows] = await pool.execute(
-        `SELECT ir.*, 
+      const status = req.query.status || 'PENDING';
+      let query = `SELECT ir.*, 
           COALESCE(u.full_name, l.full_name, u.username, l.username) AS account_name,
           COALESCE(u.email, l.email) AS account_email
          FROM institution_requests ir
          LEFT JOIN users u ON ir.user_id = u.id
-         LEFT JOIN librarians l ON ir.librarian_id = l.id
-         WHERE ir.status = 'PENDING'
-         ORDER BY ir.created_at DESC`
-      );
+         LEFT JOIN librarians l ON ir.librarian_id = l.id`;
+
+      const params = [];
+      if (status !== 'ALL') {
+        query += ` WHERE ir.status = ?`;
+        params.push(status);
+      }
+      query += ` ORDER BY ir.created_at DESC`;
+
+      const [rows] = await pool.execute(query, params);
       return res.json({ success: true, data: rows });
     } catch (e) {
       return res.status(500).json({ success: false, message: 'Failed to load requests' });
