@@ -12,7 +12,6 @@ class InstitutionRequestController {
         return res.status(400).json({ success: false, message: 'Requested institution is required' });
       }
 
-      // Get current institution
       const table = isLibrarian ? 'librarians' : 'users';
       const [rows] = await pool.execute(`SELECT institution FROM ${table} WHERE id = ? LIMIT 1`, [p.id]);
       const currentInst = rows[0]?.institution || 'Unassigned';
@@ -30,40 +29,39 @@ class InstitutionRequestController {
     }
   }
 
-// institutionRequestController.js
-static async listPending(req, res) {
-  try {
-    // Normalize: trim + uppercase; empty → PENDING
-    const raw = (req.query.status || '').toString().trim().toUpperCase();
-    const status = raw === '' ? 'PENDING' : raw;
+  // 2. Admin List Requests (PENDING / APPROVED / REJECTED / ALL)
+  static async listPending(req, res) {
+    try {
+      const raw = (req.query.status || '').toString().trim().toUpperCase();
+      const status = raw === '' ? 'PENDING' : raw;
 
-    let query = `SELECT ir.*, 
-        COALESCE(u.full_name, l.full_name, u.username, l.username) AS account_name,
-        COALESCE(u.email, l.email) AS account_email
-       FROM institution_requests ir
-       LEFT JOIN users u ON ir.user_id = u.id
-       LEFT JOIN librarians l ON ir.librarian_id = l.id`;
+      let query = `SELECT ir.*, 
+          COALESCE(u.full_name, l.full_name, u.username, l.username) AS account_name,
+          COALESCE(u.email, l.email) AS account_email
+         FROM institution_requests ir
+         LEFT JOIN users u ON ir.user_id = u.id
+         LEFT JOIN librarians l ON ir.librarian_id = l.id`;
 
-    const params = [];
-    if (status !== 'ALL') {
-      query += ` WHERE UPPER(TRIM(ir.status)) = ?`;
-      params.push(status);
+      const params = [];
+      if (status !== 'ALL') {
+        query += ` WHERE UPPER(TRIM(ir.status)) = ?`;
+        params.push(status);
+      }
+      query += ` ORDER BY ir.created_at DESC`;
+
+      const [rows] = await pool.execute(query, params);
+      return res.json({ success: true, data: rows });
+    } catch (e) {
+      console.error('listPending failed:', e);
+      return res.status(500).json({ success: false, message: 'Failed to load requests' });
     }
-    query += ` ORDER BY ir.created_at DESC`;
-
-    const [rows] = await pool.execute(query, params);
-    return res.json({ success: true, data: rows });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ success: false, message: 'Failed to load requests' });
   }
-}
 
   // 3. Admin Process Request (Approve / Reject)
   static async processRequest(req, res) {
     try {
       const { requestId } = req.params;
-      const { action, adminNotes } = req.body; // action: 'APPROVE' | 'REJECT'
+      const { action, adminNotes } = req.body;
 
       const [rows] = await pool.execute(`SELECT * FROM institution_requests WHERE id = ? LIMIT 1`, [requestId]);
       if (rows.length === 0) return res.status(404).json({ success: false, message: 'Request not found' });
@@ -74,15 +72,15 @@ static async listPending(req, res) {
         const table = r.user_type === 'LIBRARIAN' ? 'librarians' : 'users';
         const targetId = r.user_type === 'LIBRARIAN' ? r.librarian_id : r.user_id;
 
-        // Update target account's institution
         await pool.execute(`UPDATE ${table} SET institution = ? WHERE id = ?`, [r.requested_institution, targetId]);
         await pool.execute(`UPDATE institution_requests SET status = 'APPROVED', admin_notes = ? WHERE id = ?`, [adminNotes || '', requestId]);
       } else {
         await pool.execute(`UPDATE institution_requests SET status = 'REJECTED', admin_notes = ? WHERE id = ?`, [adminNotes || '', requestId]);
       }
 
-      return res.json({ success: true, message: `Request ${action.toLowerCase()}d successfully.` });
+      return res.json({ success: true, message: `Request ${String(action).toLowerCase()}d successfully.` });
     } catch (e) {
+      console.error('processRequest failed:', e);
       return res.status(500).json({ success: false, message: 'Failed to process request' });
     }
   }
